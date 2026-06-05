@@ -74,6 +74,12 @@ func main() {
 	outcome := orch.Run(ctx)
 	fmt.Printf("\n=== RUN COMPLETE: %s ===\n", outcome)
 	printFacts(orch.Snapshot)
+	if outcome == ada.OutcomeExhausted {
+		fmt.Fprintln(os.Stderr,
+			"\nhint: the run hit the step budget without the model signaling completion.\n"+
+				"      The agent ends when a Task sets \"final\": true and its assertion holds.\n"+
+				"      Raise/lower the ceiling with -max-steps, or refine the objective.")
+	}
 }
 
 func printFacts(s ada.StateSnapshot) {

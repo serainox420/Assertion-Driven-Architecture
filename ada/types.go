@@ -19,6 +19,11 @@ type Task struct {
 	Mode        string    `json:"mode"`        // "blocking" | "daemon" | "job" (see §4.1)
 	TimeoutSec  int       `json:"timeout_sec"` // hard ceiling; runtime enforces
 	Assertion   Assertion `json:"assertion"`   // how we will KNOW it worked
+	// Final marks the Task whose passing assertion proves the OBJECTIVE itself is
+	// complete. When such a task's assertion holds, the runtime records the fact
+	// and the loop terminates with FINISHED. Completion still requires a passing
+	// assertion — the model cannot declare victory by fiat (§1).
+	Final bool `json:"final,omitempty"`
 	// Compensation is the inverse action to run if a later assertion reveals this
 	// (irreversible) step left the system in a bad state — the saga pattern (§15).
 	Compensation string `json:"compensation,omitempty"`

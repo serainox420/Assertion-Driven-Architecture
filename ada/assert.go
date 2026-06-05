@@ -57,12 +57,25 @@ func checkIndependentState(a Assertion) bool {
 	}
 }
 
+// normalizeFSPath tolerates the anchored-regex form models routinely emit for fs
+// patterns. The §16 "anchor your patterns (^...$)" rule is for stdout/stderr
+// regexes, but models over-apply it to paths, producing "^/tmp/app/ready$" or
+// "^out\.log$" — which can never stat. Strip a leading ^ / trailing $ and undo
+// the common regex escapes so the path resolves.
+func normalizeFSPath(p string) string {
+	p = strings.TrimSpace(p)
+	p = strings.TrimPrefix(p, "^")
+	p = strings.TrimSuffix(p, "$")
+	return strings.NewReplacer(`\.`, `.`, `\/`, `/`, `\-`, `-`, `\_`, `_`, `\ `, ` `).Replace(p)
+}
+
 // checkFS verifies filesystem state. The pattern is a path, optionally with an
 // expected octal mode after a '|': "/usr/bin/app|0755". A bare path asserts
-// existence; the mode form additionally asserts the permission bits.
+// existence; the mode form additionally asserts the permission bits. Anchored /
+// regex-escaped paths are normalized first (models over-anchor — see above).
 func checkFS(pattern string) bool {
 	path, mode, hasMode := strings.Cut(pattern, "|")
-	info, err := os.Stat(strings.TrimSpace(path))
+	info, err := os.Stat(normalizeFSPath(path))
 	if err != nil {
 		return false
 	}

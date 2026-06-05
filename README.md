@@ -59,6 +59,9 @@ The load-bearing correctness claims from the report are implemented, not just de
 - **Strength-aware fact folding (§7.3).** Compaction never launders a weak fact into a strong conclusion.
 - **Malformed JSON as a virtual anomaly (§9.2).** A parse failure bounces back as a `model_error`
   anomaly instead of crashing the loop.
+- **In-band completion signal.** The model ends the run by setting `"final": true` on a Task —
+  but the loop only terminates if that task's assertion *also passes*. Completion is proven, not
+  declared. (`fs` patterns are also normalized, so an over-anchored `^/path$` still resolves.)
 
 ## Setup scripts
 
