@@ -62,6 +62,12 @@ The load-bearing correctness claims from the report are implemented, not just de
 
 ## Setup scripts
 
+> **Reference distro: Arch Linux.** The scripts probe `pacman` first and prefer
+> native packages (`go`, `base-devel`, `ollama-rocm`/`ollama-cuda`). Debian/Ubuntu,
+> Fedora, openSUSE, and macOS (Homebrew) are auto-detected and fully supported —
+> the package manager and package names are mapped per distro, so the same
+> `make deps` works everywhere.
+
 A small toolkit under `scripts/` (also exposed via the `Makefile`) handles install,
 build, test, model setup, running, and packaging:
 
