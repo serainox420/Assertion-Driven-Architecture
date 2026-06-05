@@ -76,6 +76,7 @@ with file mode `0644`, and prove it exists with that mode.
 - **Expected final state:** the file exists, contains `mode: prod`, mode is `0644`.
 - **Verify manually:** `stat -c '%a' /tmp/ada-bench/app/config.yaml; cat /tmp/ada-bench/app/config.yaml`
 - **Good final assertion:** `{"channel":"fs","pattern":"/tmp/ada-bench/app/config.yaml|0644"}`.
+  The runtime also accepts `|644`, `|mode=0644`, `|mode:0644`, `|0o644`.
 - **Watch for:** creating the dir is implied (`mkdir -p`); forgetting `chmod 644`; asserting
   existence only and ignoring the mode.
 
@@ -132,6 +133,8 @@ is running.
 - **Good shape:** a check-then-act: probe `kill -0 $(cat pidfile)`, and on failure start
   the daemon (`mode: daemon`, `sleep 600 & echo $! > pidfile`), final assertion on the
   process being live. This is the §15 idempotency pattern in miniature.
+- **Good process pattern:** match the command line — `"sleep 600"` — NOT a port like `":600"`
+  (a sleep has no socket, so `":600"` never matches the process/socket table).
 - **Watch for:** asserting the pidfile *exists* but not that the PID is *alive* (a stale
   pidfile passes a weak check); not handling the already-running case idempotently.
   Stop it after: `kill "$(cat /tmp/ada-bench/daemon.pid)"`.

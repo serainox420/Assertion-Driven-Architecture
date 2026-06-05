@@ -103,11 +103,30 @@ func checkFS(pattern string) bool {
 	case "file", "regular":
 		return info.Mode().IsRegular()
 	}
-	// Otherwise interpret the spec as an octal permission mode (e.g. 0644).
-	if want, err := strconv.ParseUint(strings.TrimSpace(spec), 8, 32); err == nil {
-		return uint32(info.Mode().Perm()) == uint32(want)
+	// Otherwise interpret the spec as an octal permission mode. Models phrase this
+	// several ways — "0644", "644", "mode=0644", "mode:0644", "0o644" — so be lenient.
+	if want, ok := parseOctalMode(spec); ok {
+		return uint32(info.Mode().Perm()) == want
 	}
 	return false // unknown predicate → fail secure
+}
+
+// parseOctalMode leniently parses an fs mode spec into permission bits. It
+// accepts the bare octal a model should emit ("0644") plus the variants models
+// actually emit ("mode=0644", "mode:0644", "0o644", "644").
+func parseOctalMode(spec string) (uint32, bool) {
+	s := strings.ToLower(strings.TrimSpace(spec))
+	for _, p := range []string{"mode=", "mode:", "perm=", "perm:", "0o"} {
+		s = strings.TrimPrefix(s, p)
+	}
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(v), true
 }
 
 // checkProcess verifies a process or listening socket exists in the kernel's

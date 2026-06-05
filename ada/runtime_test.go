@@ -184,8 +184,15 @@ func TestFSPredicates(t *testing.T) {
 	if !pass(full + "|file") {
 		t.Error("file on a regular file should pass")
 	}
-	if !pass(full + "|0644") {
-		t.Error("octal mode should still work")
+	// L4 failed because the model wrote "|mode=0644", not "|0644". All of these
+	// mode spellings must resolve to the same permission check.
+	for _, spec := range []string{"|0644", "|644", "|mode=0644", "|mode:0644", "|0o644"} {
+		if !pass(full + spec) {
+			t.Errorf("mode spec %q should pass on a 0644 file", spec)
+		}
+	}
+	if pass(full + "|0600") {
+		t.Error("a wrong mode must fail")
 	}
 	if pass(full + "|boguspredicate") {
 		t.Error("unknown predicate must fail secure")
