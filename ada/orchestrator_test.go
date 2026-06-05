@@ -2,6 +2,7 @@ package ada
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -79,6 +80,65 @@ func TestFinalTaskRequiresPassingAssertion(t *testing.T) {
 	orch.MaxSteps = 3
 	if got := orch.Run(context.Background()); got != OutcomeExhausted {
 		t.Fatalf("a failing Final assertion must not finish the run, got %s", got)
+	}
+}
+
+// TestStallTerminatesOnRepeatedSuccess: a model that keeps re-proving the same
+// ground (different task ids, same fs target — exactly the observed loop) must
+// stop deterministically with STABLE, NOT spin to the step budget. Termination
+// cannot depend on the model emitting "final".
+func TestStallTerminatesOnRepeatedSuccess(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "out.log")
+	n := 0
+	llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) {
+		n++
+		return Task{
+			ID:      fmt.Sprintf("touch-%d", n), // different id each turn, same proposition
+			Command: "touch " + target,
+			Mode:    ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "file_exists", Pattern: target, Channel: ChannelFS},
+		}, nil
+	}}
+	orch := NewOrchestrator("make out.log", llm, NewRuntime())
+	orch.MaxSteps = 200 // would loop ~forever without stall detection
+	orch.StallBudget = 3
+
+	got := orch.Run(context.Background())
+	if got != OutcomeStable {
+		t.Fatalf("expected STABLE, got %s", got)
+	}
+	if len(orch.Snapshot.EstablishedFacts) != 1 {
+		t.Errorf("re-proving the same proposition must yield ONE fact, got %d",
+			len(orch.Snapshot.EstablishedFacts))
+	}
+	if orch.steps > 1+orch.StallBudget+1 {
+		t.Errorf("stopped too late: %d steps for budget %d", orch.steps, orch.StallBudget)
+	}
+}
+
+// Distinct verified propositions must NOT trip the stall guard — real progress
+// resets the counter.
+func TestDistinctProgressDoesNotStall(t *testing.T) {
+	dir := t.TempDir()
+	llm := &MockLLM{Respond: func(s StateSnapshot) (Task, error) {
+		i := len(s.EstablishedFacts) + 1
+		if i > 5 {
+			return Task{ID: "done", Command: "true", Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+				Assertion: Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode}}, nil
+		}
+		p := filepath.Join(dir, fmt.Sprintf("f%d", i)) // a NEW path each turn
+		return Task{ID: fmt.Sprintf("mk%d", i), Command: "touch " + p, Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "file_exists", Pattern: p, Channel: ChannelFS}}, nil
+	}}
+	orch := NewOrchestrator("make five files", llm, NewRuntime())
+	orch.StallBudget = 3
+	if got := orch.Run(context.Background()); got != OutcomeFinished {
+		t.Fatalf("expected FINISHED (steady progress then final), got %s", got)
+	}
+	// 5 distinct files + the final verification task = 6 distinct facts.
+	if len(orch.Snapshot.EstablishedFacts) != 6 {
+		t.Errorf("expected 6 distinct facts, got %d", len(orch.Snapshot.EstablishedFacts))
 	}
 }
 

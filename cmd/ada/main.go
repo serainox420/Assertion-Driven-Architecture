@@ -34,6 +34,7 @@ func main() {
 		maxSteps   = flag.Int("max-steps", 200, "global step budget (hard stop)")
 		maxEntropy = flag.Int("max-entropy", 6, "entropy ceiling that triggers a Hard Context Fork")
 		maxFacts   = flag.Int("max-facts", 15, "fact-folding cap")
+		stall      = flag.Int("stall", 3, "stop after this many consecutive no-progress successes (0 disables)")
 		useMeta    = flag.Bool("meta", false, "enable the heuristic meta-controller")
 		verbose    = flag.Bool("v", true, "log one structured line per loop event")
 	)
@@ -66,6 +67,7 @@ func main() {
 	orch.MaxSteps = *maxSteps
 	orch.MaxEntropy = *maxEntropy
 	orch.MaxFacts = *maxFacts
+	orch.StallBudget = *stall
 	orch.Log = logf
 	if *useMeta {
 		orch.Meta = ada.HeuristicController{MaxEntropy: *maxEntropy}
@@ -74,11 +76,19 @@ func main() {
 	outcome := orch.Run(ctx)
 	fmt.Printf("\n=== RUN COMPLETE: %s ===\n", outcome)
 	printFacts(orch.Snapshot)
-	if outcome == ada.OutcomeExhausted {
+	switch outcome {
+	case ada.OutcomeStable:
 		fmt.Fprintln(os.Stderr,
-			"\nhint: the run hit the step budget without the model signaling completion.\n"+
-				"      The agent ends when a Task sets \"final\": true and its assertion holds.\n"+
-				"      Raise/lower the ceiling with -max-steps, or refine the objective.")
+			"\nnote: the agent reached a stable state — it kept re-verifying facts it had\n"+
+				"      already established without making new progress, so the loop stopped.\n"+
+				"      The objective is likely complete; the model just never set \"final\": true.\n"+
+				"      The established facts above are the verified result.")
+	case ada.OutcomeExhausted:
+		fmt.Fprintln(os.Stderr,
+			"\nhint: the run hit the step budget without finishing or stabilizing.\n"+
+				"      The agent ends when a Task sets \"final\": true, when an external check\n"+
+				"      passes, or when it stops making progress (-stall). Adjust -max-steps,\n"+
+				"      -stall, or refine the objective.")
 	}
 }
 
