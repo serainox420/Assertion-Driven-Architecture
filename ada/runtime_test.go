@@ -3,7 +3,9 @@ package ada
 import (
 	"encoding/base64"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -219,6 +221,28 @@ func TestBlockingDoesNotHangOnBackgroundChild(t *testing.T) {
 	}
 	if !res.Passed {
 		t.Fatalf("expected pass (echo ran), got %+v", res.Anomaly)
+	}
+}
+
+// L6's bogus pass: the objective ("verify jq is installed") is in the agent's
+// argv, so a `process` pattern "jq" matched the AGENT itself — a self-satisfying
+// false positive. A pattern that only appears in our own command line must NOT
+// match, while a genuinely-running process still must.
+func TestProcessExcludesSelf(t *testing.T) {
+	// A token unique to this test process's own argv (the test binary path).
+	if checkProcess(regexp.QuoteMeta(os.Args[0])) {
+		t.Error("process check must exclude the agent's own process (self-satisfaction)")
+	}
+
+	// A genuinely running, unrelated process must still match.
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start sleep: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+	time.Sleep(100 * time.Millisecond) // let it appear in the process table
+	if !checkProcess(`sleep 30`) {
+		t.Error("a real running process must still match")
 	}
 }
 

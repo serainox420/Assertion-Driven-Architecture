@@ -100,11 +100,16 @@ prove the port is listening. *(needs `python3`)*
 **Objective:** verify that `jq` is installed, capture `jq --version` into
 `/tmp/ada-bench/jq.txt`, and prove that file exists.
 
-- **Channels:** `fs` (and optionally `exit_code` for the presence probe).
+- **Channels:** `exit_code` (presence probe) + `fs` (the captured file).
 - **Expected final state:** `jq.txt` exists, containing e.g. `jq-1.7`.
 - **Verify manually:** `cat /tmp/ada-bench/jq.txt`
-- **Watch for:** if `jq` is absent the agent should report the anomaly, not fabricate a
-  version. (Install it first with `scripts/install.sh` if you want a clean pass.)
+- **Good presence check:** `command -v jq` asserted on `exit_code "0"` — proves jq is INSTALLED.
+  Then capture the version and assert `fs` `jq.txt|nonempty`.
+- **Watch for:** using the `process` channel to prove "installed" — wrong: that proves a tool is
+  *running*, not present, and a pattern like `jq` lifted from the objective can falsely match the
+  agent's own command line (the runtime now excludes self, so the bad check correctly fails). If
+  `jq` is absent the agent should report the anomaly, not fabricate a version. (Install it with
+  `scripts/install.sh` for a clean pass.)
 
 ## L7 — compound condition via a shell sentinel (§3.4)
 

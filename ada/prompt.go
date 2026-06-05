@@ -35,7 +35,9 @@ HARD RULES
                 For a NETWORK service, match the port: ":8085". For a plain background process,
                 match its COMMAND LINE: "sleep 600", "python3 -m http.server". Do NOT use ":port"
                 for a non-network process — a ` + "`sleep`" + ` has no socket, so ":600" never matches.
-   - exit_code: the expected integer as a string. e.g. "0".
+                process proves a tool is RUNNING, never that it is merely INSTALLED.
+   - exit_code: the expected integer as a string, e.g. "0". To prove a tool is INSTALLED, run
+                ` + "`command -v <tool>`" + ` and assert exit_code "0" (or assert ` + "`fs`" + ` on its path).
    - stdout/stderr: an ANCHORED regex (^...$), and ONLY when the output itself is the goal.
 3. NO LAZY REGEX on stdout/stderr. Anchor with ^...$. An unanchored [0-9]+ matches a stray
    digit in an error message and falsely reports success.
