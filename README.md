@@ -60,6 +60,32 @@ The load-bearing correctness claims from the report are implemented, not just de
 - **Malformed JSON as a virtual anomaly (§9.2).** A parse failure bounces back as a `model_error`
   anomaly instead of crashing the loop.
 
+## Setup scripts
+
+A small toolkit under `scripts/` (also exposed via the `Makefile`) handles install,
+build, test, model setup, running, and packaging:
+
+| Command | Does |
+|---------|------|
+| `make deps` / `scripts/install.sh` | Install Go ≥1.22, git, jq, toolchain (multi-distro). `--with-ollama`, `--with-python` optional |
+| `make build` / `scripts/build.sh` | Build the static `ada_agent` binary into `bin/` (§14.1) |
+| `make test` / `scripts/test.sh` | gofmt check + `go vet` + `go test` (`--race` available) |
+| `make demo` / `scripts/run.sh -demo` | Run the offline demo (no model needed) |
+| `make model` / `scripts/model.sh` | Start Ollama if needed and pull the worker model |
+| `make run ARGS="..."` / `scripts/run.sh ...` | Run the agent (builds first if needed) |
+| `make package` / `scripts/package.sh` | Assemble the portable `ada_toolkit` tarball (§14) |
+| `scripts/ollama-env.sh` | Canonical Ollama env — `source` it before `ollama serve` |
+
+Typical first run:
+
+```bash
+make deps WITH=--with-ollama   # or: scripts/install.sh --with-ollama
+make build && make test
+make demo                       # offline, instant
+make model                      # pull qwen2.5-coder:14b
+make run ARGS='-objective "create /tmp/app/ready and prove the file exists"'
+```
+
 ## Run it
 
 Requires Go 1.22+.

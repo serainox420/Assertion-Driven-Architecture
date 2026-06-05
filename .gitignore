@@ -1,3 +1,6 @@
 /ada_agent
+/bin/
+/dist/
 *.gguf
 /outputs/
+/training/.venv/
