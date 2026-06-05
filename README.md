@@ -1,14 +1,18 @@
 # Assertion-Driven Architecture (ADA) — Prototype
 
-A working Go prototype of the **Assertion-Driven Architecture**: a control pattern
-for LLM operations agents that removes self-evaluation from the model and relocates
+> ### A working Go prototype of the **Assertion-Driven Architecture**: a control pattern
+> for LLM operations agents that removes self-evaluation from the model and relocates
 it to a deterministic runtime.
-
+>
+> <img width="800" height="600" alt="image" src="https://github.com/user-attachments/assets/082896d2-f803-42f0-8016-5fca21c52c42" />
+>
 > The model proposes a *hypothesis* (an action paired with a machine-checkable
 > assertion). A non-LLM runtime executes the action, checks the assertion against
 > **observable state**, and routes: assertion holds → record a fact, continue,
 > never wake the model; assertion fails → hand the model a structured anomaly and
 > force a course correction.
+
+---
 
 This repo implements the contract, runtime, orchestrator loop, and supporting
 machinery described in the ADA design report. Section references below (e.g. §3)
