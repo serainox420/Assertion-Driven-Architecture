@@ -87,7 +87,26 @@ build, test, model setup, running, and packaging:
 | `make model` / `scripts/model.sh` | Start Ollama if needed and pull the worker model |
 | `make run ARGS="..."` / `scripts/run.sh ...` | Run the agent (builds first if needed) |
 | `make package` / `scripts/package.sh` | Assemble the portable `ada_toolkit` tarball (§14) |
+| `make sync` / `scripts/sync.sh` | Update local files from a fresh clone — shows diffs, asks before overwriting |
+| `make bench` / `scripts/bench.sh` | Run the graded benchmark objectives (see `benchmark/`) |
 | `scripts/ollama-env.sh` | Canonical Ollama env — `source` it before `ollama serve` |
+
+### Updating an existing checkout
+
+```bash
+make sync                 # clone fresh, list what differs, prompt before replacing
+make sync FLAGS=--dry-run # just show the differences
+```
+
+### Benchmark
+
+`benchmark/` holds eight increasingly hard objectives (`objectives.tsv`) with an
+expected-output reference and a manual scoring sheet (`expected.md`):
+
+```bash
+make bench LEVEL=L4       # run one level
+make bench                # run all; transcripts land in benchmark/results/
+```
 
 Typical first run:
 
