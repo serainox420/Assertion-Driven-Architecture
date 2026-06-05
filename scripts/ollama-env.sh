@@ -7,6 +7,11 @@
 # Values are tuned for a single-GPU local box (see the research notes §2). Adjust
 # the GPU lines for your hardware; the defaults assume an AMD ROCm card. On NVIDIA
 # or CPU-only boxes, drop the HSA/HIP lines.
+#
+# Reference platform is Arch Linux + ROCm (pacman package: ollama-rocm). On Arch,
+# the server runs as a systemd unit: `sudo systemctl restart ollama` after editing
+# its drop-in, or just `ollama serve` in the foreground for logs. Debian/Ubuntu and
+# others work the same way via the official installer.
 
 # ── GPU detection (AMD / ROCm) ────────────────────────────────────────────────
 # Set HSA_OVERRIDE_GFX_VERSION ONLY if `ollama serve` misdetects your card. Read

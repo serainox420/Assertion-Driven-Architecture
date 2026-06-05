@@ -34,12 +34,32 @@ version_ge() {
   [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]
 }
 
+# detect_distro — read /etc/os-release into DISTRO_ID / DISTRO_LIKE (best-effort).
+# Arch is the project's reference distro; everything else is "compatible".
+detect_distro() {
+  DISTRO_ID="unknown"; DISTRO_LIKE=""
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    DISTRO_ID="${ID:-unknown}"
+    DISTRO_LIKE="${ID_LIKE:-}"
+  fi
+  export DISTRO_ID DISTRO_LIKE
+}
+
+# is_arch — true on Arch or any Arch-derived distro (Manjaro, EndeavourOS, …).
+is_arch() {
+  detect_distro
+  [[ "${DISTRO_ID}" == "arch" || "${DISTRO_LIKE}" == *arch* ]] || have pacman
+}
+
 # ── Package manager detection (best-effort, multi-distro) ─────────────────────
-# Sets PKG_MGR and PKG_INSTALL; returns non-zero if none found.
+# Sets PKG_MGR and PKG_INSTALL; returns non-zero if none found. Arch's pacman is
+# probed FIRST (reference platform); apt/dnf/zypper/brew follow for compatibility.
 detect_pkg_mgr() {
-  if   have apt-get; then PKG_MGR=apt;    PKG_INSTALL="sudo apt-get install -y"
+  if   have pacman;  then PKG_MGR=pacman; PKG_INSTALL="sudo pacman -S --noconfirm --needed"
+  elif have apt-get; then PKG_MGR=apt;    PKG_INSTALL="sudo apt-get install -y"
   elif have dnf;     then PKG_MGR=dnf;    PKG_INSTALL="sudo dnf install -y"
-  elif have pacman;  then PKG_MGR=pacman; PKG_INSTALL="sudo pacman -S --noconfirm --needed"
   elif have zypper;  then PKG_MGR=zypper; PKG_INSTALL="sudo zypper install -y"
   elif have brew;    then PKG_MGR=brew;   PKG_INSTALL="brew install"
   else return 1; fi

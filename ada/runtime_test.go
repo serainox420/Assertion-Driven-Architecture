@@ -127,6 +127,28 @@ func TestFSAssertionStrong(t *testing.T) {
 	}
 }
 
+// Models routinely emit anchored-regex fs patterns ("^/abs/path$") because they
+// over-apply the stdout anchoring rule. The runtime must tolerate that and stat
+// the real path, or fs assertions can never pass.
+func TestFSAssertionToleratesAnchoredPattern(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "out.log")
+	rt := NewRuntime()
+	res := rt.Execute(Task{
+		ID: "t", Command: "printf data > " + target, Mode: ModeBlocking, TimeoutSec: 5,
+		// note the regex-style anchors + escaped dot, as a real model emits
+		Assertion: Assertion{Type: "file_exists", Pattern: "^" + regexpEscapePath(target) + "$", Channel: ChannelFS},
+	})
+	if !res.Passed {
+		t.Fatalf("anchored fs pattern should normalize and pass, got %+v", res.Anomaly)
+	}
+}
+
+// regexpEscapePath escapes '.' the way a model anchoring a path would.
+func regexpEscapePath(p string) string {
+	return strings.ReplaceAll(p, ".", `\.`)
+}
+
 func TestFSAssertionFailsWhenAbsent(t *testing.T) {
 	rt := NewRuntime()
 	res := rt.Execute(Task{

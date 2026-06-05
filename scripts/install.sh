@@ -27,14 +27,14 @@ done
 GO_MIN="1.22"
 
 pkg_for() {
-  # Map a generic need to this distro's package name.
+  # Map a generic need to this distro's package name (Arch/pacman listed first).
   local need="$1"
   case "${PKG_MGR}:${need}" in
-    apt:go)        echo golang-go ;;     dnf:go)      echo golang ;;
-    pacman:go)     echo go ;;            zypper:go)   echo go ;;        brew:go)     echo go ;;
-    apt:toolchain) echo build-essential ;; dnf:toolchain) echo "gcc make" ;;
-    pacman:toolchain) echo base-devel ;; zypper:toolchain) echo "gcc make" ;; brew:toolchain) echo "" ;;
-    *:*)           echo "$need" ;;       # git, jq, curl map 1:1
+    pacman:go)        echo go ;;            apt:go)        echo golang-go ;;
+    dnf:go)           echo golang ;;        zypper:go)     echo go ;;        brew:go) echo go ;;
+    pacman:toolchain) echo base-devel ;;    apt:toolchain) echo build-essential ;;
+    dnf:toolchain)    echo "gcc make" ;;    zypper:toolchain) echo "gcc make" ;; brew:toolchain) echo "" ;;
+    *:*)              echo "$need" ;;       # git, jq, curl map 1:1 everywhere
   esac
 }
 
@@ -49,8 +49,14 @@ ensure() {
   ${PKG_INSTALL} ${pkg}
 }
 
+detect_distro
+info "distro: ${DISTRO_ID}${DISTRO_LIKE:+ (like ${DISTRO_LIKE})} — Arch is the reference target; others are supported"
+
 info "detecting package manager"
-if detect_pkg_mgr; then ok "using ${PKG_MGR}"; else
+if detect_pkg_mgr; then
+  ok "using ${PKG_MGR}"
+  is_arch && ok "Arch-family detected: native pacman packages preferred"
+else
   warn "no supported package manager found — will only verify what's already installed"
 fi
 
@@ -83,6 +89,13 @@ require jq
 if [[ "${WITH_OLLAMA}" == 1 ]]; then
   if have ollama; then
     ok "ollama present ($(ollama --version 2>/dev/null | head -n1))"
+  elif [[ "${PKG_MGR:-}" == "pacman" ]]; then
+    # Arch-first: install from the official repos. Pick the GPU-matched package.
+    info "installing Ollama from Arch repos"
+    warn "GPU variants exist: 'ollama-rocm' (AMD), 'ollama-cuda' (NVIDIA), 'ollama' (CPU/generic)."
+    warn "override the choice with: ADA_OLLAMA_PKG=ollama-rocm scripts/install.sh --with-ollama"
+    # shellcheck disable=SC2086
+    ${PKG_INSTALL} "${ADA_OLLAMA_PKG:-ollama}"
   else
     info "installing Ollama via the official script"
     if [[ "${ASSUME_YES}" == 1 ]]; then

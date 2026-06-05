@@ -63,8 +63,17 @@ The load-bearing correctness claims from the report are implemented, not just de
 - **Strength-aware fact folding (§7.3).** Compaction never launders a weak fact into a strong conclusion.
 - **Malformed JSON as a virtual anomaly (§9.2).** A parse failure bounces back as a `model_error`
   anomaly instead of crashing the loop.
+- **In-band completion signal.** The model ends the run by setting `"final": true` on a Task —
+  but the loop only terminates if that task's assertion *also passes*. Completion is proven, not
+  declared. (`fs` patterns are also normalized, so an over-anchored `^/path$` still resolves.)
 
 ## Setup scripts
+
+> **Reference distro: Arch Linux.** The scripts probe `pacman` first and prefer
+> native packages (`go`, `base-devel`, `ollama-rocm`/`ollama-cuda`). Debian/Ubuntu,
+> Fedora, openSUSE, and macOS (Homebrew) are auto-detected and fully supported —
+> the package manager and package names are mapped per distro, so the same
+> `make deps` works everywhere.
 
 A small toolkit under `scripts/` (also exposed via the `Makefile`) handles install,
 build, test, model setup, running, and packaging:

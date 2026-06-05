@@ -49,6 +49,39 @@ func TestRecoveryFromAnomaly(t *testing.T) {
 	}
 }
 
+// TestFinalTaskTerminates: a verified Final task ends the run with FINISHED even
+// with no DoneCheck wired — this is the in-band completion signal the CLI relies
+// on (previously the loop ran to the step budget and had to be killed).
+func TestFinalTaskTerminates(t *testing.T) {
+	llm := ScriptedLLM(Task{
+		ID: "done", Command: "true", Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+		Assertion: Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode},
+	})
+	orch := NewOrchestrator("do the thing", llm, NewRuntime())
+	orch.MaxSteps = 50 // would spin to the budget without the Final signal
+
+	if got := orch.Run(context.Background()); got != OutcomeFinished {
+		t.Fatalf("expected FINISHED from a verified Final task, got %s", got)
+	}
+	if orch.steps != 1 {
+		t.Errorf("expected to stop after the single final step, took %d", orch.steps)
+	}
+}
+
+// A Final task whose assertion FAILS must not terminate the run — completion
+// still requires a passing assertion, not the model's say-so.
+func TestFinalTaskRequiresPassingAssertion(t *testing.T) {
+	llm := ScriptedLLM(Task{
+		ID: "claims-done", Command: "true", Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+		Assertion: Assertion{Type: "exit", Pattern: "7", Channel: ChannelExitCode}, // fails (exit 0)
+	})
+	orch := NewOrchestrator("x", llm, NewRuntime())
+	orch.MaxSteps = 3
+	if got := orch.Run(context.Background()); got != OutcomeExhausted {
+		t.Fatalf("a failing Final assertion must not finish the run, got %s", got)
+	}
+}
+
 // TestParseErrorBecomesAnomaly: a model that breaks its JSON contract must not
 // crash the loop; the failure is fed back as a model_error anomaly (§9.2).
 func TestParseErrorBecomesAnomaly(t *testing.T) {

@@ -48,6 +48,7 @@ type Orchestrator struct {
 	steps            int
 	consecutiveFails int
 	forking          bool // next generation should sample at ForkTemp (§9.3)
+	completed        bool // a Final task's assertion held — objective proven complete
 }
 
 // NewOrchestrator returns an orchestrator with documented defaults.
@@ -112,6 +113,12 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 			o.logf("step=%d JOB_DONE %s", o.steps, f.Statement)
 		}
 
+		// Completion via a verified Final task (the model's in-band "done" signal),
+		// or an externally supplied DoneCheck. Both require passing assertions.
+		if o.completed {
+			o.logf("step=%d OBJECTIVE_COMPLETE (final task verified)", o.steps)
+			return OutcomeFinished
+		}
 		if o.DoneCheck != nil && o.DoneCheck(o.Snapshot) {
 			o.logf("step=%d OBJECTIVE_COMPLETE", o.steps)
 			return OutcomeFinished
@@ -137,6 +144,9 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 			assertion: task.Assertion,
 		})
 		o.logf("step=%d ACK id=%s strength=%s", o.steps, task.ID, res.Strength)
+		if task.Final {
+			o.completed = true // verified Final task ⇒ objective complete (checked in Run)
+		}
 		return
 	}
 
