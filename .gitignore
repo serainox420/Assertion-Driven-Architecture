@@ -4,3 +4,4 @@
 *.gguf
 /outputs/
 /training/.venv/
+/benchmark/results/

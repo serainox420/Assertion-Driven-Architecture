@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help deps build test race demo run model package clean fmt
+.PHONY: help deps build test race demo run model package clean fmt sync bench
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -37,5 +37,11 @@ model: ## Ensure Ollama is up and pull the worker model (override with MODEL=tag
 package: ## Build the portable ada_toolkit tarball into dist/
 	scripts/package.sh
 
-clean: ## Remove build artifacts
-	rm -rf bin dist
+sync: ## Update local files from a fresh clone (shows diffs, asks before writing). FLAGS="--dry-run"
+	scripts/sync.sh $(FLAGS)
+
+bench: ## Run benchmark objectives. LEVEL=L3 for one, empty for all
+	scripts/bench.sh $(LEVEL)
+
+clean: ## Remove build artifacts and benchmark results
+	rm -rf bin dist benchmark/results
