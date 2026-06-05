@@ -59,11 +59,14 @@ while IFS=$'\t' read -r level maxsteps objective; do
     -max-steps "${maxsteps}" \
     2>&1 | tee "${log}"
 
-  # Surface the headline outcome.
-  if grep -q 'RUN COMPLETE: FINISHED' "${log}"; then
-    ok "${level}: FINISHED  (transcript: ${log})"
+  # Surface the headline outcome. FINISHED (model signaled completion) and STABLE
+  # (deterministic fixed point — done but the model didn't say so) both count as a
+  # pass; EXHAUSTED means it never converged.
+  if grep -qE 'RUN COMPLETE: (FINISHED|STABLE)' "${log}"; then
+    outcome="$(grep -oE 'RUN COMPLETE: [A-Z]+' "${log}" | tail -1 | awk '{print $3}')"
+    ok "${level}: ${outcome}  (transcript: ${log})"
   else
-    warn "${level}: did NOT finish — see ${log} and compare with benchmark/expected.md"
+    warn "${level}: did NOT complete (EXHAUSTED) — see ${log} and compare with benchmark/expected.md"
   fi
 done < "${TSV}"
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTruncateKeepsEnds(t *testing.T) {
@@ -147,6 +148,71 @@ func TestFSAssertionToleratesAnchoredPattern(t *testing.T) {
 // regexpEscapePath escapes '.' the way a model anchoring a path would.
 func regexpEscapePath(p string) string {
 	return strings.ReplaceAll(p, ".", `\.`)
+}
+
+// L2/L7 in the benchmark failed forever because `fs` only understood octal
+// modes: "path|nonempty" did ParseUint("nonempty") → always false. These must work.
+func TestFSPredicates(t *testing.T) {
+	dir := t.TempDir()
+	full := filepath.Join(dir, "full.txt")
+	empty := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(full, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime()
+	pass := func(pattern string) bool {
+		return rt.Execute(Task{
+			ID: "t", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "fs", Pattern: pattern, Channel: ChannelFS},
+		}).Passed
+	}
+	if !pass(full + "|nonempty") {
+		t.Error("nonempty on a non-empty file should pass")
+	}
+	if pass(empty + "|nonempty") {
+		t.Error("nonempty on an empty file must fail")
+	}
+	if !pass(empty + "|empty") {
+		t.Error("empty on an empty file should pass")
+	}
+	if !pass(dir + "|dir") {
+		t.Error("dir on a directory should pass")
+	}
+	if !pass(full + "|file") {
+		t.Error("file on a regular file should pass")
+	}
+	if !pass(full + "|0644") {
+		t.Error("octal mode should still work")
+	}
+	if pass(full + "|boguspredicate") {
+		t.Error("unknown predicate must fail secure")
+	}
+}
+
+// L8 froze the CLI: a command that backgrounds a process inheriting the stdio
+// pipe made cmd.Run() block until the GRANDCHILD closed the pipe (forever).
+// WaitDelay must reclaim the pipes shortly after bash exits, so Execute returns
+// promptly even though the backgrounded sleep is still alive.
+func TestBlockingDoesNotHangOnBackgroundChild(t *testing.T) {
+	rt := NewRuntime()
+	start := time.Now()
+	res := rt.Execute(Task{
+		ID:         "bg",
+		Command:    "sleep 30 & echo started", // sleep inherits the pipe and outlives bash
+		Mode:       ModeBlocking,
+		TimeoutSec: 20, // generous; we must return via WaitDelay, NOT the timeout
+		Assertion:  Assertion{Type: "regex", Pattern: "^started$", Channel: ChannelStdout},
+	})
+	elapsed := time.Since(start)
+	if elapsed > 10*time.Second {
+		t.Fatalf("Execute hung for %s — WaitDelay did not reclaim the pipe", elapsed)
+	}
+	if !res.Passed {
+		t.Fatalf("expected pass (echo ran), got %+v", res.Anomaly)
+	}
 }
 
 func TestFSAssertionFailsWhenAbsent(t *testing.T) {

@@ -103,6 +103,22 @@ func (r *Runtime) executeBlocking(task Task) ExecutionResult {
 	cmd := exec.CommandContext(ctx, "bash", "-c", r.muzzle(task.Command))
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 
+	// Run the command in its own process group so a real timeout can reap the
+	// WHOLE tree — including any process the command backgrounded (e.g. a stray
+	// `sleep 600 &`) — instead of orphaning it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // negative PID == process group
+		}
+		return nil
+	}
+	// The classic exec hang: if the command backgrounds a child that inherits our
+	// stdout/stderr pipe, Run() blocks until THAT child also closes the pipe —
+	// potentially forever (observed with a daemon launched in blocking mode).
+	// WaitDelay forces Run to reclaim the pipes shortly after bash itself exits.
+	cmd.WaitDelay = 2 * time.Second
+
 	_ = cmd.Run()
 	exitCode := -1
 	if cmd.ProcessState != nil {

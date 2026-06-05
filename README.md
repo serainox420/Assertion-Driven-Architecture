@@ -56,6 +56,9 @@ The load-bearing correctness claims from the report are implemented, not just de
 - **Fail-secure default.** An unknown assertion channel is never called success.
 - **Output-as-injection defense (§6).** All environment-sourced output in the anomaly is Base64-encoded.
 - **Hostile-output guards (§5).** Truncation (head+tail), binary detection, ulimit muzzle.
+- **Background-process safety.** A blocking command that backgrounds a child inheriting the
+  stdio pipe can't hang the runtime (a `WaitDelay` reclaims the pipes); a real timeout reaps the
+  whole process group, not just the shell.
 - **Failure classification + entropy (§8.2).** `connection refused`/`command not found` jump entropy
   fast; `model_error` increments gently; timeouts are transient.
 - **Hard Context Fork (§8.3).** Kills daemons, **re-validates weak facts** (drops the unverifiable ones),

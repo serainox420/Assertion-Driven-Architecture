@@ -64,7 +64,7 @@ func NewOrchestrator(objective string, llm LLM, rt *Runtime) *Orchestrator {
 		MaxEntropy:  6,
 		MaxFacts:    15, // hard cap before folding (§7.2)
 		MaxSteps:    200,
-		StallBudget: 3,   // stop after this many consecutive no-progress successes
+		StallBudget: 2,   // stop after this many consecutive no-progress successes
 		NormalTemp:  0.0, // determinism where we want reliability (§9.3)
 		ForkTemp:    0.8, // entropy where we want exploration (§9.3)
 		Log:         func(string, ...any) {},
@@ -164,12 +164,8 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 		}
 		o.seen[key] = true
 		o.dupSuccess = 0
-		stmt := task.Description
-		if strings.TrimSpace(stmt) == "" {
-			stmt = fmt.Sprintf("%s verified via %s", task.ID, task.Assertion.Channel)
-		}
 		o.addFact(Fact{
-			Statement: stmt,
+			Statement: factStatement(task),
 			SourceID:  task.ID,
 			Strength:  res.Strength,
 			assertion: task.Assertion,
@@ -212,6 +208,45 @@ func factKey(t Task) string {
 	default:
 		return a.Channel + "|" + a.Pattern + "|" + strings.TrimSpace(t.Command)
 	}
+}
+
+// factStatement renders a human- and model-readable description of WHAT a passing
+// task established. The model reads these back in EstablishedFacts; an
+// uninformative "1 verified via fs" left it unable to tell the objective was
+// already met (so it never signaled completion and looped). A self-describing
+// statement ("verified file exists: out.log") lets the model recognize it is done.
+func factStatement(t Task) string {
+	if d := strings.TrimSpace(t.Description); d != "" {
+		return d
+	}
+	a := t.Assertion
+	switch a.Channel {
+	case ChannelFS:
+		path, spec, has := strings.Cut(a.Pattern, "|")
+		path = normalizeFSPath(path)
+		if has {
+			return fmt.Sprintf("verified: %s (%s)", path, strings.TrimSpace(spec))
+		}
+		return "verified file exists: " + path
+	case ChannelProcess:
+		return "verified process/socket present: " + a.Pattern
+	case ChannelService:
+		return "verified service active: " + a.Pattern
+	case ChannelExitCode:
+		return fmt.Sprintf("ran `%s` (exit %s)", shorten(t.Command, 80), a.Pattern)
+	case ChannelStdout, ChannelStderr:
+		return fmt.Sprintf("output of `%s` matched /%s/", shorten(t.Command, 60), a.Pattern)
+	default:
+		return t.ID + " verified"
+	}
+}
+
+func shorten(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // addFact appends a verified fact and folds the fact base if it overflows (§7.2).
