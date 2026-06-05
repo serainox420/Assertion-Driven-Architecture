@@ -34,7 +34,7 @@ func main() {
 		maxSteps   = flag.Int("max-steps", 200, "global step budget (hard stop)")
 		maxEntropy = flag.Int("max-entropy", 6, "entropy ceiling that triggers a Hard Context Fork")
 		maxFacts   = flag.Int("max-facts", 15, "fact-folding cap")
-		stall      = flag.Int("stall", 3, "stop after this many consecutive no-progress successes (0 disables)")
+		stall      = flag.Int("stall", 2, "stop after this many consecutive no-progress successes (0 disables)")
 		useMeta    = flag.Bool("meta", false, "enable the heuristic meta-controller")
 		verbose    = flag.Bool("v", true, "log one structured line per loop event")
 	)

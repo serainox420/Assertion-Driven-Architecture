@@ -17,9 +17,12 @@ Each run writes a transcript to `benchmark/results/<level>.log` and prints the
 final outcome + established facts. Compare against the **Expected** sections below.
 The objective strings live in `benchmark/objectives.tsv` (single source of truth).
 
-A run is a **pass** if: outcome is `FINISHED`, the listed observable state exists,
-and the facts that carry it are **strong** (not `stdout`-asserted). `EXHAUSTED`,
-weak facts standing in for state changes, or a premature `final` are **fails**.
+A run is a **pass** if: outcome is `FINISHED` **or `STABLE`**, the listed observable
+state exists, and the facts that carry it are **strong** (not `stdout`-asserted).
+`FINISHED` means the model signaled completion with `"final": true`; `STABLE` means
+the runtime detected a fixed point (the objective was met but the model didn't say
+so) — both are successful terminals. `EXHAUSTED`, weak facts standing in for state
+changes, or a premature `final` are **fails**.
 
 > Scratch dir for every level is `/tmp/ada-bench`. Reset between runs with:
 > `rm -rf /tmp/ada-bench`.
@@ -43,13 +46,12 @@ weak facts standing in for state changes, or a premature `final` are **fails**.
 **Objective:** write the kernel release (`uname -r`) into `/tmp/ada-bench/kernel.txt`
 and prove the file exists and is non-empty.
 
-- **Channels:** `fs` (existence) + a non-empty check.
+- **Channels:** `fs` (existence + non-empty).
 - **Expected final state:** `kernel.txt` exists and contains the kernel version.
 - **Verify manually:** `test -s /tmp/ada-bench/kernel.txt && cat /tmp/ada-bench/kernel.txt`
-- **Good pattern:** redirect into the file, then a single sentinel check that proves
-  non-emptiness, e.g. `[ -s /tmp/ada-bench/kernel.txt ] && echo NONEMPTY` asserted on
-  `stdout ^NONEMPTY$` — a *legitimate* stdout use because the sentinel reads independent
-  state (`-s`). An `fs` existence check is also acceptable.
+- **Good final assertion:** `{"channel":"fs","pattern":"/tmp/ada-bench/kernel.txt|nonempty"}` —
+  the `fs` channel proves both existence and size>0 in one strong check. (The §3.4 shell-sentinel
+  form — `[ -s file ] && echo OK` asserted on `stdout ^OK$` — is also valid.)
 - **Watch for:** asserting that the *command printed* the version (weak) rather than that
   the *file* holds it.
 

@@ -69,24 +69,45 @@ func normalizeFSPath(p string) string {
 	return strings.NewReplacer(`\.`, `.`, `\/`, `/`, `\-`, `-`, `\_`, `_`, `\ `, ` `).Replace(p)
 }
 
-// checkFS verifies filesystem state. The pattern is a path, optionally with an
-// expected octal mode after a '|': "/usr/bin/app|0755". A bare path asserts
-// existence; the mode form additionally asserts the permission bits. Anchored /
-// regex-escaped paths are normalized first (models over-anchor — see above).
+// checkFS verifies filesystem state. The pattern is a path, optionally with a
+// predicate after a '|':
+//
+//	/usr/bin/app            exists (any type)
+//	/usr/bin/app|0755       exists AND mode bits == 0755 (octal)
+//	/var/log/app.log|nonempty   exists AND size > 0
+//	/var/log/app.log|empty      exists AND size == 0
+//	/etc/app|dir            exists AND is a directory
+//	/etc/app.conf|file      exists AND is a regular file
+//
+// Models reach for `|nonempty` naturally; supporting it (rather than silently
+// failing a ParseUint) is what makes "prove the file is non-empty" achievable.
+// Anchored / regex-escaped paths are normalized first (models over-anchor).
 func checkFS(pattern string) bool {
-	path, mode, hasMode := strings.Cut(pattern, "|")
+	path, spec, hasSpec := strings.Cut(pattern, "|")
 	info, err := os.Stat(normalizeFSPath(path))
 	if err != nil {
 		return false
 	}
-	if !hasMode {
+	if !hasSpec {
 		return true
 	}
-	want, err := strconv.ParseUint(strings.TrimSpace(mode), 8, 32)
-	if err != nil {
-		return false
+	switch strings.ToLower(strings.TrimSpace(spec)) {
+	case "exists":
+		return true
+	case "nonempty", "non-empty", "notempty":
+		return info.Size() > 0
+	case "empty":
+		return info.Size() == 0
+	case "dir", "directory":
+		return info.IsDir()
+	case "file", "regular":
+		return info.Mode().IsRegular()
 	}
-	return uint32(info.Mode().Perm()) == uint32(want)
+	// Otherwise interpret the spec as an octal permission mode (e.g. 0644).
+	if want, err := strconv.ParseUint(strings.TrimSpace(spec), 8, 32); err == nil {
+		return uint32(info.Mode().Perm()) == uint32(want)
+	}
+	return false // unknown predicate → fail secure
 }
 
 // checkProcess verifies a process or listening socket exists in the kernel's
