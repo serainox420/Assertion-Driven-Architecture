@@ -13,6 +13,7 @@ type Outcome string
 
 const (
 	OutcomeFinished  Outcome = "FINISHED"  // objective verified complete
+	OutcomeStable    Outcome = "STABLE"    // reached a fixed point: re-proving existing ground, no new progress
 	OutcomeExhausted Outcome = "EXHAUSTED" // step budget consumed before a clean terminal
 	OutcomeFailed    Outcome = "FAILED"    // unrecoverable
 )
@@ -25,11 +26,12 @@ type Orchestrator struct {
 	RT       *Runtime
 	LLM      LLM
 
-	MaxEntropy int     // entropy ceiling that triggers a Hard Context Fork (§8.3)
-	MaxFacts   int     // fact-folding cap (§7.2)
-	MaxSteps   int     // global budget — no runaway
-	NormalTemp float64 // decoder temperature for ordinary THINK steps (§9.3)
-	ForkTemp   float64 // raised temperature on a fork, to force novelty (§9.3)
+	MaxEntropy  int     // entropy ceiling that triggers a Hard Context Fork (§8.3)
+	MaxFacts    int     // fact-folding cap (§7.2)
+	MaxSteps    int     // global budget — no runaway
+	StallBudget int     // consecutive no-progress successes before stopping (0 disables)
+	NormalTemp  float64 // decoder temperature for ordinary THINK steps (§9.3)
+	ForkTemp    float64 // raised temperature on a fork, to force novelty (§9.3)
 
 	// DoneCheck reports whether the objective is verifiably complete. It runs
 	// against established (preferably strong) facts, never against model claims.
@@ -47,22 +49,26 @@ type Orchestrator struct {
 
 	steps            int
 	consecutiveFails int
-	forking          bool // next generation should sample at ForkTemp (§9.3)
-	completed        bool // a Final task's assertion held — objective proven complete
+	forking          bool            // next generation should sample at ForkTemp (§9.3)
+	completed        bool            // a Final task's assertion held — objective proven complete
+	seen             map[string]bool // verified propositions already established (dedup + stall)
+	dupSuccess       int             // consecutive successes that re-proved existing ground
 }
 
 // NewOrchestrator returns an orchestrator with documented defaults.
 func NewOrchestrator(objective string, llm LLM, rt *Runtime) *Orchestrator {
 	return &Orchestrator{
-		Snapshot:   StateSnapshot{Objective: objective},
-		RT:         rt,
-		LLM:        llm,
-		MaxEntropy: 6,
-		MaxFacts:   15, // hard cap before folding (§7.2)
-		MaxSteps:   200,
-		NormalTemp: 0.0, // determinism where we want reliability (§9.3)
-		ForkTemp:   0.8, // entropy where we want exploration (§9.3)
-		Log:        func(string, ...any) {},
+		Snapshot:    StateSnapshot{Objective: objective},
+		RT:          rt,
+		LLM:         llm,
+		MaxEntropy:  6,
+		MaxFacts:    15, // hard cap before folding (§7.2)
+		MaxSteps:    200,
+		StallBudget: 3,   // stop after this many consecutive no-progress successes
+		NormalTemp:  0.0, // determinism where we want reliability (§9.3)
+		ForkTemp:    0.8, // entropy where we want exploration (§9.3)
+		Log:         func(string, ...any) {},
+		seen:        make(map[string]bool),
 	}
 }
 
@@ -123,6 +129,15 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 			o.logf("step=%d OBJECTIVE_COMPLETE", o.steps)
 			return OutcomeFinished
 		}
+
+		// Deterministic stall guard: if the model keeps re-proving ground it has
+		// already established and never advances or signals completion, stop rather
+		// than spin to the step budget. Termination must not depend on the model.
+		if o.StallBudget > 0 && o.dupSuccess >= o.StallBudget {
+			o.logf("step=%d STABLE (re-verified existing facts %d× with no new progress; model did not signal completion)",
+				o.steps, o.dupSuccess)
+			return OutcomeStable
+		}
 	}
 	return OutcomeExhausted
 }
@@ -133,6 +148,22 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 	if res.Passed {
 		o.consecutiveFails = 0
 		o.Snapshot.Anomaly = nil
+		if task.Final {
+			o.completed = true // verified Final task ⇒ objective complete (checked in Run)
+		}
+
+		// Has this proposition already been proven? Re-verifying existing ground is
+		// not progress — it's how a model that won't signal completion loops forever.
+		// Record only genuinely new facts; count the repeats toward the stall budget.
+		key := factKey(task)
+		if o.seen[key] {
+			o.dupSuccess++
+			o.logf("step=%d NOPROGRESS id=%s key=%q dup=%d/%d",
+				o.steps, task.ID, key, o.dupSuccess, o.StallBudget)
+			return
+		}
+		o.seen[key] = true
+		o.dupSuccess = 0
 		stmt := task.Description
 		if strings.TrimSpace(stmt) == "" {
 			stmt = fmt.Sprintf("%s verified via %s", task.ID, task.Assertion.Channel)
@@ -144,9 +175,6 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 			assertion: task.Assertion,
 		})
 		o.logf("step=%d ACK id=%s strength=%s", o.steps, task.ID, res.Strength)
-		if task.Final {
-			o.completed = true // verified Final task ⇒ objective complete (checked in Run)
-		}
 		return
 	}
 
@@ -163,6 +191,26 @@ func (o *Orchestrator) afterFailure(class string) {
 	o.Snapshot.EntropyLevel += entropyWeight(class)
 	if o.Snapshot.EntropyLevel >= o.MaxEntropy {
 		o.HardContextFork()
+	}
+}
+
+// factKey identifies the proposition a passing task establishes, so re-proving
+// the same ground is detected as no-progress. For independent-state channels the
+// assertion pattern *is* the proposition (the file/path/service/socket), so the
+// command is irrelevant — proving "/tmp/out exists" twice is the same fact even
+// via different commands. For generic channels (exit_code/stdout/stderr) the
+// pattern is too coarse (every "exit 0" would collide), so the command is folded
+// in — distinct actions that happen to share a generic assertion count as progress.
+func factKey(t Task) string {
+	a := t.Assertion
+	switch a.Channel {
+	case ChannelFS:
+		path, _, _ := strings.Cut(a.Pattern, "|")
+		return "fs|" + normalizeFSPath(path)
+	case ChannelProcess, ChannelService:
+		return a.Channel + "|" + strings.TrimSpace(a.Pattern)
+	default:
+		return a.Channel + "|" + a.Pattern + "|" + strings.TrimSpace(t.Command)
 	}
 }
 

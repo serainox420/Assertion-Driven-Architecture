@@ -62,6 +62,10 @@ The load-bearing correctness claims from the report are implemented, not just de
 - **In-band completion signal.** The model ends the run by setting `"final": true` on a Task —
   but the loop only terminates if that task's assertion *also passes*. Completion is proven, not
   declared. (`fs` patterns are also normalized, so an over-anchored `^/path$` still resolves.)
+- **Deterministic stall guard.** Termination never depends on the model's goodwill. The runtime
+  fingerprints each verified proposition; when the model re-proves ground it already established
+  (a model that won't emit `final` will loop forever), the loop stops on its own with `STABLE`
+  after `-stall` consecutive no-progress successes — and duplicate facts are never recorded.
 
 ## Setup scripts
 
