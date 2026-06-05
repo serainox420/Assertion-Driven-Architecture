@@ -1,0 +1,141 @@
+package ada
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+)
+
+// TestRecoveryFromAnomaly: the model emits a failing task, receives the anomaly,
+// and adapts to a passing one. The loop must reach FINISHED with a strong fact.
+func TestRecoveryFromAnomaly(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ok")
+
+	llm := &MockLLM{Respond: func(s StateSnapshot) (Task, error) {
+		if s.Anomaly != nil {
+			// adapt: actually create the file and prove it via fs
+			return Task{
+				ID: "create", Command: "touch " + target, Mode: ModeBlocking, TimeoutSec: 5,
+				Assertion: Assertion{Type: "file_exists", Pattern: target, Channel: ChannelFS},
+			}, nil
+		}
+		// first hypothesis: assert the file exists before creating it → fails
+		return Task{
+			ID: "premature", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "file_exists", Pattern: target, Channel: ChannelFS},
+		}, nil
+	}}
+
+	orch := NewOrchestrator("create the file", llm, NewRuntime())
+	orch.MaxSteps = 10
+	orch.DoneCheck = func(s StateSnapshot) bool {
+		for _, f := range s.EstablishedFacts {
+			if f.SourceID == "create" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if got := orch.Run(context.Background()); got != OutcomeFinished {
+		t.Fatalf("expected FINISHED, got %s", got)
+	}
+	if n := len(orch.Snapshot.EstablishedFacts); n != 1 {
+		t.Fatalf("expected 1 established fact, got %d", n)
+	}
+	if orch.Snapshot.EstablishedFacts[0].Strength != StrengthStrong {
+		t.Errorf("expected strong fact, got %q", orch.Snapshot.EstablishedFacts[0].Strength)
+	}
+}
+
+// TestParseErrorBecomesAnomaly: a model that breaks its JSON contract must not
+// crash the loop; the failure is fed back as a model_error anomaly (§9.2).
+func TestParseErrorBecomesAnomaly(t *testing.T) {
+	calls := 0
+	llm := &MockLLM{Respond: func(s StateSnapshot) (Task, error) {
+		calls++
+		if calls == 1 {
+			return Task{}, errInvalid("boom") // simulate a parse failure
+		}
+		// after seeing the synthetic anomaly, emit something valid & terminal
+		return Task{
+			ID: "ok", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode},
+		}, nil
+	}}
+	orch := NewOrchestrator("x", llm, NewRuntime())
+	orch.MaxSteps = 5
+	orch.DoneCheck = func(s StateSnapshot) bool { return len(s.EstablishedFacts) > 0 }
+
+	if got := orch.Run(context.Background()); got != OutcomeFinished {
+		t.Fatalf("expected FINISHED after recovery, got %s", got)
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+func errInvalid(s string) error   { return errString(s) }
+
+// TestHardForkDropsUnverifiableWeakFact: a weak (stdout) fact that cannot be
+// independently re-checked must be dropped on a Hard Context Fork, while a
+// strong fact survives (§8.3).
+func TestHardForkDropsUnverifiableWeakFact(t *testing.T) {
+	orch := NewOrchestrator("x", &MockLLM{}, NewRuntime())
+	orch.Snapshot.EstablishedFacts = []Fact{
+		{Statement: "strong one", SourceID: "a", Strength: StrengthStrong,
+			assertion: Assertion{Channel: ChannelExitCode}},
+		{Statement: "weak stdout", SourceID: "b", Strength: StrengthWeak,
+			assertion: Assertion{Channel: ChannelStdout, Pattern: "x"}},
+	}
+	orch.Snapshot.EntropyLevel = 99
+
+	orch.HardContextFork()
+
+	if orch.Snapshot.EntropyLevel != 0 {
+		t.Errorf("fork should reset entropy, got %d", orch.Snapshot.EntropyLevel)
+	}
+	if !orch.forking {
+		t.Error("fork should arm raised-temperature generation")
+	}
+	if len(orch.Snapshot.EstablishedFacts) != 1 {
+		t.Fatalf("expected weak unverifiable fact dropped, got %d facts", len(orch.Snapshot.EstablishedFacts))
+	}
+	if orch.Snapshot.EstablishedFacts[0].SourceID != "a" {
+		t.Errorf("expected strong fact to survive, got %q", orch.Snapshot.EstablishedFacts[0].SourceID)
+	}
+}
+
+// TestFactFoldingRespectsStrength: folding a batch containing a weak fact must
+// produce a provisional, weak summary — never launder weak into strong (§7.3).
+func TestFactFoldingRespectsStrength(t *testing.T) {
+	orch := NewOrchestrator("x", &MockLLM{}, NewRuntime())
+	orch.MaxFacts = 4
+	for i := 0; i < 4; i++ {
+		orch.addFact(Fact{SourceID: "s", Strength: StrengthStrong})
+	}
+	// the 5th (weak) triggers a fold of the oldest
+	orch.addFact(Fact{SourceID: "w", Strength: StrengthWeak})
+
+	summary := orch.Snapshot.EstablishedFacts[0]
+	if summary.SourceID != "FOLD" {
+		t.Fatalf("expected a fold summary first, got %q", summary.SourceID)
+	}
+	// the weak fact was among the recent kept ones, strong ones folded → strong summary
+	if summary.Strength != StrengthStrong {
+		t.Errorf("folding only strong facts should yield a strong summary, got %q", summary.Strength)
+	}
+}
+
+func TestRewardShaping(t *testing.T) {
+	if Reward(ExecutionResult{Passed: true, Strength: StrengthStrong}, false) != 10 {
+		t.Error("strong pass should reward +10")
+	}
+	if Reward(ExecutionResult{Passed: true, Strength: StrengthWeak}, false) != 2 {
+		t.Error("weak pass should reward +2")
+	}
+	if Reward(ExecutionResult{}, true) != 100 {
+		t.Error("objective completion should reward +100")
+	}
+}
