@@ -1,0 +1,15 @@
+services:
+  arch:
+    build: .
+    container_name: ada-sandbox
+    volumes:
+      - .:/ada
+      - ada-home:/root
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
+    command: sleep infinity
+    network_mode: host
+    
+volumes:
+  ada-home:
