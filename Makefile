@@ -45,3 +45,15 @@ bench: ## Run benchmark objectives. LEVEL=L3 for one, empty for all
 
 clean: ## Remove build artifacts and benchmark results
 	rm -rf bin dist benchmark/results
+
+up: ## Uruchom sandbox w tle
+	docker compose up -d --build
+
+down: ## Zatrzymaj sandbox
+	docker compose down
+
+shell: ## Połącz się z shellem
+	docker compose exec arch bash
+
+stop: ## Pauza (stan zachowany)
+	docker compose stop
