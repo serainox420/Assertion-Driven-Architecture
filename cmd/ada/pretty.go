@@ -120,8 +120,10 @@ func newPrettyLogf(w io.Writer, color bool) func(string, ...any) {
 			emit("  " + p.c("33", "⊘ "+afterColon(line)))
 
 		// ── step level ──────────────────────────────────────────────────────────
+		case strings.Contains(line, "ABANDON"):
+			emit("    " + p.c("31", "✗ abandon") + " " + p.c("2", "model could not produce valid JSON"))
 		case strings.Contains(line, "THINK_FAILED"):
-			emit("    " + p.c("31", "✗ think") + " " + p.c("2", "bad output: "+clip(kv["err"], 120)))
+			emit("    " + p.c("33", "↻ retry") + "  " + p.c("2", "invalid JSON, re-prompting: "+clip(kv["err"], 100)))
 		case strings.Contains(line, " THINK "):
 			emit("    " + p.c("2", "· think   "+id+"  ["+kv["channel"]+"]"))
 		case strings.Contains(line, " ACK "):

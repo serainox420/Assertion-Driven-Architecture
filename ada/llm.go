@@ -103,7 +103,7 @@ func (o *OllamaLLM) complete(ctx context.Context, system, prompt string, format 
 func (o *OllamaLLM) GenerateTask(ctx context.Context, snapshot StateSnapshot, temperature float64) (Task, error) {
 	resp, err := o.complete(ctx, SystemPrompt, BuildPrompt(snapshot), TaskSchema, map[string]any{
 		"temperature": temperature, // 0.0 normal; raised on fork (§9.3)
-		"num_predict": 512,         // a Task JSON is never long
+		"num_predict": 1024,        // headroom so a longer Task JSON isn't truncated mid-object
 		"top_p":       0.1,
 		"num_ctx":     o.NumCtx,
 	})
