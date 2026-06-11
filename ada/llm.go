@@ -68,44 +68,65 @@ type ollamaResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// GenerateTask issues one grammar-constrained completion and parses the result.
-func (o *OllamaLLM) GenerateTask(ctx context.Context, snapshot StateSnapshot, temperature float64) (Task, error) {
-	reqBody := ollamaRequest{
-		Model:  o.Model,
-		Prompt: BuildPrompt(snapshot),
-		System: SystemPrompt,
-		Format: TaskSchema, // engine-enforced (§9.1)
-		Stream: false,
-		Options: map[string]any{
-			"temperature": temperature, // 0.0 normal; raised on fork (§9.3)
-			"num_predict": 512,         // a Task JSON is never long
-			"top_p":       0.1,
-			"num_ctx":     o.NumCtx,
-		},
-	}
-	buf, err := json.Marshal(reqBody)
+// complete issues one grammar-constrained completion and returns the raw response
+// string. Shared by GenerateTask (execution) and Plan (planning).
+func (o *OllamaLLM) complete(ctx context.Context, system, prompt string, format any, opts map[string]any) (string, error) {
+	buf, err := json.Marshal(ollamaRequest{
+		Model: o.Model, Prompt: prompt, System: system, Format: format, Stream: false, Options: opts,
+	})
 	if err != nil {
-		return Task{}, err
+		return "", err
 	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/api/generate", bytes.NewReader(buf))
 	if err != nil {
-		return Task{}, err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := o.HTTP.Do(req)
 	if err != nil {
-		return Task{}, fmt.Errorf("ollama request failed: %w", err)
+		return "", fmt.Errorf("ollama request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var out ollamaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return Task{}, fmt.Errorf("decoding ollama response: %w", err)
+		return "", fmt.Errorf("decoding ollama response: %w", err)
 	}
 	if out.Error != "" {
-		return Task{}, fmt.Errorf("ollama error: %s", out.Error)
+		return "", fmt.Errorf("ollama error: %s", out.Error)
 	}
-	return ParseTask([]byte(out.Response))
+	return out.Response, nil
+}
+
+// GenerateTask issues one grammar-constrained completion and parses the result.
+func (o *OllamaLLM) GenerateTask(ctx context.Context, snapshot StateSnapshot, temperature float64) (Task, error) {
+	resp, err := o.complete(ctx, SystemPrompt, BuildPrompt(snapshot), TaskSchema, map[string]any{
+		"temperature": temperature, // 0.0 normal; raised on fork (§9.3)
+		"num_predict": 512,         // a Task JSON is never long
+		"top_p":       0.1,
+		"num_ctx":     o.NumCtx,
+	})
+	if err != nil {
+		return Task{}, err
+	}
+	return ParseTask([]byte(resp))
+}
+
+// Plan issues one grammar-constrained planning completion (planning mode, §5.6).
+// OllamaLLM therefore implements both LLM and Planner.
+func (o *OllamaLLM) Plan(ctx context.Context, in PlanInput, temperature float64) (PlanDecision, error) {
+	resp, err := o.complete(ctx, PlannerPrompt, BuildPlanPrompt(in), PlanSchema, map[string]any{
+		"temperature": temperature,
+		"num_predict": 512,
+		"num_ctx":     o.NumCtx,
+	})
+	if err != nil {
+		return PlanDecision{}, err
+	}
+	var dec PlanDecision
+	if err := json.Unmarshal([]byte(resp), &dec); err != nil {
+		return PlanDecision{}, fmt.Errorf("invalid PlanDecision JSON: %w", err)
+	}
+	return dec, nil
 }

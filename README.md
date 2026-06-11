@@ -156,6 +156,45 @@ step=4 ACK   id=create_marker strength=strong
 step=4 OBJECTIVE_COMPLETE
 ```
 
+## Open-ended / complex tasks (planning mode)
+
+The flat loop handles a single concrete objective. For a larger or open-ended task —
+one without an obvious end — pass `-plan`. A **planner** breaks the objective into a
+flat, ordered list of sub-goals, the flat loop completes each one (carrying verified
+facts forward), and the planner **re-plans from the accumulated facts every round**,
+continuing until it judges the objective satisfied.
+
+```bash
+# Offline planning demo — decomposes, completes sub-goals, declares done.
+go run ./cmd/ada -demo -plan
+
+# A real open-ended objective:
+go run ./cmd/ada -plan \
+  -objective "provision this host as a working web server and prove it serves traffic" \
+  -model qwen2.5-coder:14b \
+  -max-rounds 8 -goal-steps 40
+```
+
+```
+round=1 PLAN done=false subgoals=2 reason="provision the workspace files"
+round=1 goal=1/2 START "create the config file at …/config.yaml"
+round=1 goal=1 FINISHED …
+round=1 goal=2 FINISHED …
+round=2 PLAN done=true subgoals=0 reason="both workspace files exist and are verified"
+=== PLAN RUN COMPLETE: FINISHED ===
+```
+
+Design choices (flat, re-plannable — not a rigid tree, per §0):
+
+- **Completion is the planner's call**, judged against verified facts — never the
+  executor's say-so. The objective ends when the planner returns `done: true`.
+- **Re-plannable list, not a tree.** Each round the next sub-goals are re-derived from
+  the current facts, so actions that change the environment don't shatter a pre-committed plan.
+- **Always terminates.** `-max-rounds` bounds the run; a round that produces no new
+  verified facts ends as `STABLE` (stuck) rather than looping forever.
+- Same model can plan and execute, or split a large "driver" planner from a fast
+  "worker" executor (§1.5).
+
 ## Test
 
 ```bash

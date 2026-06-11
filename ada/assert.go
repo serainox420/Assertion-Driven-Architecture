@@ -130,17 +130,33 @@ func parseOctalMode(spec string) (uint32, bool) {
 }
 
 // checkProcess verifies a process or listening socket exists in the kernel's
-// tables. The pattern is matched (as a regex) against the full `ps` command
-// lines and the `ss` socket listing — channels the action cannot narrate into.
+// tables. The pattern is matched (as a regex) against the `ps` command lines and
+// the `ss` socket listing — channels the action cannot narrate into.
+//
+// It EXCLUDES the agent's own process. The agent's argv embeds the objective
+// text, so a bare pattern lifted from the objective (e.g. "jq" from "verify jq is
+// installed") would otherwise match the agent itself — a self-satisfying false
+// positive that reports a tool as "running" when nothing of the sort is true (§3).
 func checkProcess(pattern string) bool {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return false
 	}
-	if out, err := exec.Command("ps", "-eo", "args").Output(); err == nil && re.Match(out) {
-		return true
+	self := strconv.Itoa(os.Getpid())
+	// `pid=,args=` suppresses the header and lets us drop our own PID's line.
+	if out, err := exec.Command("ps", "-eo", "pid=,args=").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			pid, args, ok := strings.Cut(strings.TrimSpace(line), " ")
+			if !ok || pid == self {
+				continue
+			}
+			if re.MatchString(args) {
+				return true
+			}
+		}
 	}
-	// `ss` may be absent on minimal hosts; failure to find it is not a match.
+	// Listening sockets (network services). The agent listens on nothing, so there
+	// is no self-match here. `ss` may be absent on minimal hosts.
 	if out, err := exec.Command("ss", "-tlnp").Output(); err == nil && re.Match(out) {
 		return true
 	}
