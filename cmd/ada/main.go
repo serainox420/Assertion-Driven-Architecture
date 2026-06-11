@@ -31,7 +31,10 @@ func main() {
 		model      = flag.String("model", "qwen2.5-coder:14b", "Ollama model tag for the worker")
 		ollamaURL  = flag.String("ollama", "http://localhost:11434", "Ollama base URL")
 		demo       = flag.Bool("demo", false, "run the offline, model-free demonstration")
+		plan       = flag.Bool("plan", false, "planning mode: decompose an open-ended objective into sub-goals and work them")
 		maxSteps   = flag.Int("max-steps", 200, "global step budget (hard stop)")
+		maxRounds  = flag.Int("max-rounds", 8, "planning mode: max plan/execute rounds")
+		goalSteps  = flag.Int("goal-steps", 40, "planning mode: step budget per sub-goal")
 		maxEntropy = flag.Int("max-entropy", 6, "entropy ceiling that triggers a Hard Context Fork")
 		maxFacts   = flag.Int("max-facts", 15, "fact-folding cap")
 		stall      = flag.Int("stall", 2, "stop after this many consecutive no-progress successes (0 disables)")
@@ -51,7 +54,11 @@ func main() {
 	defer stop()
 
 	if *demo {
-		runDemo(ctx, logf)
+		if *plan {
+			runPlanDemo(ctx, logf)
+		} else {
+			runDemo(ctx, logf)
+		}
 		return
 	}
 
@@ -59,6 +66,26 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: -objective is required (or pass -demo)")
 		flag.Usage()
 		os.Exit(2)
+	}
+
+	// Planning mode: decompose an open-ended objective into sub-goals and work
+	// them until the planner judges the objective satisfied.
+	if *plan {
+		llm := ada.NewOllamaLLM(*ollamaURL, *model)
+		rt := ada.NewRuntime()
+		coord := ada.NewCoordinator(*objective, llm, llm, rt)
+		coord.MaxRounds = *maxRounds
+		coord.GoalSteps = *goalSteps
+		coord.MaxEntropy = *maxEntropy
+		coord.StallBudget = *stall
+		coord.MaxFacts = *maxFacts
+		coord.Log = logf
+
+		outcome, dec := coord.Run(ctx)
+		fmt.Printf("\n=== PLAN RUN COMPLETE: %s ===\n", outcome)
+		fmt.Printf("Planner: %s\n", dec.Reason)
+		printFacts(ada.StateSnapshot{Objective: *objective, EstablishedFacts: coord.Facts()})
+		return
 	}
 
 	llm := ada.NewOllamaLLM(*ollamaURL, *model)

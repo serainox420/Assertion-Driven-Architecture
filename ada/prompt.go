@@ -16,6 +16,8 @@ ENVIRONMENT
 - Assertion fails  -> you receive an AnomalyPayload (the autopsy) and must adapt.
 - Each turn you receive the full state: the Objective, EstablishedFacts (everything you have
   already PROVEN), and the most recent Anomaly (or none, meaning your last Task succeeded).
+- If "main_objective" is present, your "objective" is the CURRENT sub-goal — one step toward
+  the main objective. Set final:true when the CURRENT SUB-GOAL is done, NOT the whole main goal.
 
 BEFORE EVERY TASK: read EstablishedFacts. If they ALREADY satisfy the Objective, do NOT repeat
 work — emit ONE Task with "final": true that re-asserts the key result. If the Objective needs
@@ -59,6 +61,44 @@ HARD RULES
    set "final": true rather than re-verifying the same state again.
 
 Emit JSON matching the schema. Anything else is discarded and penalized.`
+
+// PlannerPrompt drives the planning layer (planning mode, the Coordinator). The
+// planner never runs commands — it decomposes and judges completion (§5.6/§6.2).
+const PlannerPrompt = `You are the PLANNER for an autonomous operations agent. You do NOT run commands.
+
+You are given a high-level OBJECTIVE, the verified FACTS established so far, and the sub-goals
+already completed. Decide the next move and output ONE JSON object:
+
+- "done": true ONLY if the FACTS already prove the OBJECTIVE is fully achieved. Judge against the
+  facts, never against hope. When true, "subgoals" must be empty.
+- "subgoals": when not done, an ORDERED list (3-6 max) of the next concrete sub-goals. Each must be
+  a single checkable outcome an executor can achieve in a few shell actions and PROVE with an
+  assertion — e.g. "install nginx and confirm the service is active", "write /etc/app/config.yaml
+  with the prod settings and verify mode 0644". Re-plan from the CURRENT facts each round: drop
+  finished or now-irrelevant sub-goals, add what the facts show is still missing. Do not repeat a
+  sub-goal already reflected in the facts.
+- "reason": one sentence — why it is done, or what this batch of sub-goals accomplishes.
+
+Decompose ambitious or open-ended objectives into the smallest useful next steps and make steady,
+verifiable progress. Output ONLY the JSON.`
+
+// PlanSchema constrains the planner's output (§9.1).
+var PlanSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"done":     map[string]any{"type": "boolean"},
+		"reason":   map[string]any{"type": "string"},
+		"subgoals": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+	},
+	"required": []string{"done", "reason", "subgoals"},
+}
+
+// BuildPlanPrompt renders the planner's input (objective + verified facts +
+// completed sub-goals) as the user turn.
+func BuildPlanPrompt(in PlanInput) string {
+	blob, _ := json.MarshalIndent(in, "", "  ")
+	return fmt.Sprintf("Decide the next move toward the objective. Emit the PlanDecision JSON.\n\n%s", string(blob))
+}
 
 // TaskSchema is the JSON schema handed to the inference engine for
 // grammar-constrained decoding: malformed JSON is made physically impossible at
