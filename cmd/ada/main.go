@@ -98,6 +98,7 @@ func main() {
 	llm := ada.NewOllamaLLM(*ollamaURL, *model)
 	rt := ada.NewRuntime()
 	orch := ada.NewOrchestrator(*objective, llm, rt)
+	orch.Snapshot.Environment = ada.HostFacts() // tell the agent what host it's on (§5.3)
 	orch.MaxSteps = *maxSteps
 	orch.MaxEntropy = *maxEntropy
 	orch.MaxFacts = *maxFacts

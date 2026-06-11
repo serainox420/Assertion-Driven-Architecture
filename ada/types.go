@@ -83,6 +83,7 @@ const (
 type StateSnapshot struct {
 	Objective        string          `json:"objective"`                // goal in focus (a sub-goal in planning mode)
 	MainObjective    string          `json:"main_objective,omitempty"` // pinned top goal when planning (§5.6)
+	Environment      []string        `json:"environment,omitempty"`    // durable host facts: os/distro/package_manager/user (§5.3)
 	EstablishedFacts []Fact          `json:"established_facts"`        // verified state changes (§7)
 	Anomaly          *AnomalyPayload `json:"anomaly,omitempty"`        // nil when advancing
 	EntropyLevel     int             `json:"entropy_level"`            // distance to a hard fork (§8)

@@ -19,15 +19,16 @@ type Coordinator struct {
 	Planner   Planner  // decomposes + judges completion (may be the same model as LLM)
 	RT        *Runtime // shared deterministic runtime
 
-	MaxRounds   int     // plan/execute rounds before giving up (safety net)
-	GoalSteps   int     // flat-loop step budget per sub-goal
-	MaxEntropy  int     // forwarded to each sub-goal Orchestrator (§8.3)
-	MaxStuck    int     // forwarded: abandon a sub-goal after N steps with no new fact
-	StallBudget int     // forwarded to each sub-goal Orchestrator (§ stall guard)
-	MaxFacts    int     // fact-folding cap (§7.2)
-	NormalTemp  float64 // executor temp for normal steps (§9.3)
-	ForkTemp    float64 // executor temp on a fork (§9.3)
-	PlanTemp    float64 // planner sampling temperature (a little creativity helps decomposition)
+	MaxRounds   int      // plan/execute rounds before giving up (safety net)
+	GoalSteps   int      // flat-loop step budget per sub-goal
+	MaxEntropy  int      // forwarded to each sub-goal Orchestrator (§8.3)
+	MaxStuck    int      // forwarded: abandon a sub-goal after N steps with no new fact
+	StallBudget int      // forwarded to each sub-goal Orchestrator (§ stall guard)
+	MaxFacts    int      // fact-folding cap (§7.2)
+	NormalTemp  float64  // executor temp for normal steps (§9.3)
+	ForkTemp    float64  // executor temp on a fork (§9.3)
+	PlanTemp    float64  // planner sampling temperature (a little creativity helps decomposition)
+	Environment []string // durable host facts shown to planner + executor (§5.3)
 	Log         func(format string, args ...any)
 
 	facts     []Fact
@@ -47,6 +48,7 @@ func NewCoordinator(objective string, llm LLM, planner Planner, rt *Runtime) *Co
 		LLM:         llm,
 		Planner:     planner,
 		RT:          rt,
+		Environment: HostFacts(), // tell the agent what host it's on (§5.3)
 		MaxRounds:   8,
 		GoalSteps:   25,
 		MaxEntropy:  6,
@@ -79,7 +81,7 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 		}
 
 		dec, err := c.Planner.Plan(ctx,
-			PlanInput{Objective: c.Objective, Facts: c.facts, Completed: c.completed}, c.PlanTemp)
+			PlanInput{Objective: c.Objective, Environment: c.Environment, Facts: c.facts, Completed: c.completed}, c.PlanTemp)
 		if err != nil {
 			// A planner contract violation is a survivable anomaly, not a crash.
 			c.logf("round=%d PLAN_FAILED err=%v", round, err)
@@ -134,6 +136,7 @@ func (c *Coordinator) runSubgoal(ctx context.Context, subgoal string) Outcome {
 	o.ForkTemp = c.ForkTemp
 	o.Log = c.Log
 	o.Snapshot.MainObjective = c.Objective
+	o.Snapshot.Environment = c.Environment
 	o.Snapshot.EstablishedFacts = append([]Fact(nil), c.facts...)
 	for _, f := range c.facts {
 		o.seen[factSeedKey(f)] = true // don't re-prove ground earlier sub-goals already established

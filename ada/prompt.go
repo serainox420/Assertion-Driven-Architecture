@@ -16,6 +16,9 @@ ENVIRONMENT
 - Assertion fails  -> you receive an AnomalyPayload (the autopsy) and must adapt.
 - Each turn you receive the full state: the Objective, EstablishedFacts (everything you have
   already PROVEN), and the most recent Anomaly (or none, meaning your last Task succeeded).
+- The "environment" field lists durable host facts (os, distro, package_manager, user). USE them:
+  install with the listed package_manager and its exact command — do NOT assume apt-get. If the
+  user is root, do NOT prefix sudo.
 - If "main_objective" is present, your "objective" is the CURRENT sub-goal — one step toward
   the main objective. Set final:true when the CURRENT SUB-GOAL is done, NOT the whole main goal.
 
