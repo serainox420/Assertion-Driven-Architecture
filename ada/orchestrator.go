@@ -58,7 +58,15 @@ type Orchestrator struct {
 	// counters and the loop spins to the step budget. 0 disables.
 	MaxStuck int
 
+	// MaxThinkFails bounds CONSECUTIVE invalid/incomplete Task emissions before the
+	// run is abandoned. A malformed-JSON error is the model's own fixable mistake —
+	// re-prompting with the error usually fixes it — so these retries are FREE: they
+	// do not consume the step budget (a single JSON hiccup must not kill a goal with
+	// a tight -goal-steps). 0 disables the cap. Reset on any valid emission.
+	MaxThinkFails int
+
 	steps            int
+	thinkFails       int // consecutive invalid Task emissions (free retries)
 	consecutiveFails int
 	forking          bool            // next generation should sample at ForkTemp (§9.3)
 	completed        bool            // a Final task's assertion held — objective proven complete
@@ -70,18 +78,19 @@ type Orchestrator struct {
 // NewOrchestrator returns an orchestrator with documented defaults.
 func NewOrchestrator(objective string, llm LLM, rt *Runtime) *Orchestrator {
 	return &Orchestrator{
-		Snapshot:    StateSnapshot{Objective: objective},
-		RT:          rt,
-		LLM:         llm,
-		MaxEntropy:  6,
-		MaxFacts:    15, // hard cap before folding (§7.2)
-		MaxSteps:    200,
-		MaxStuck:    6,   // abandon after this many steps with no new verified fact
-		StallBudget: 2,   // stop after this many consecutive no-progress successes
-		NormalTemp:  0.0, // determinism where we want reliability (§9.3)
-		ForkTemp:    0.8, // entropy where we want exploration (§9.3)
-		Log:         func(string, ...any) {},
-		seen:        make(map[string]bool),
+		Snapshot:      StateSnapshot{Objective: objective},
+		RT:            rt,
+		LLM:           llm,
+		MaxEntropy:    6,
+		MaxFacts:      15, // hard cap before folding (§7.2)
+		MaxSteps:      200,
+		MaxStuck:      6,   // abandon after this many steps with no new verified fact
+		MaxThinkFails: 4,   // consecutive invalid-JSON emissions before giving up (free retries)
+		StallBudget:   2,   // stop after this many consecutive no-progress successes
+		NormalTemp:    0.0, // determinism where we want reliability (§9.3)
+		ForkTemp:      0.8, // entropy where we want exploration (§9.3)
+		Log:           func(string, ...any) {},
+		seen:          make(map[string]bool),
 	}
 }
 
@@ -97,7 +106,6 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 		if err := ctx.Err(); err != nil {
 			return OutcomeExhausted
 		}
-		o.steps++
 
 		// The meta-controller manages strategy BEFORE the model thinks (§10).
 		o.applyMetaAction()
@@ -109,17 +117,29 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 
 		task, err := o.LLM.GenerateTask(ctx, o.Snapshot, temp)
 		if err != nil {
-			// A parse / contract violation is a normal anomaly, not a crash (§9.2).
-			o.logf("step=%d THINK_FAILED err=%v", o.steps, err)
+			// A parse / contract violation is the model's own fixable mistake (§9.2).
+			// Feed it back as an anomaly and RETRY for free — do NOT spend a step, or a
+			// single bad JSON would kill a goal under a tight -goal-steps budget.
+			o.thinkFails++
+			o.logf("THINK_FAILED (%d) err=%v", o.thinkFails, err)
 			o.Snapshot.Anomaly = &AnomalyPayload{
 				FailedTaskID: "SYSTEM_JSON_PARSE_ERROR",
-				Expected:     "valid Task JSON",
+				Expected:     "valid Task JSON with non-empty id, command, and assertion.channel",
 				ActualOutB64: base64.StdEncoding.EncodeToString([]byte(err.Error())),
 				FailureClass: ClassModelError,
 			}
-			o.afterFailure(ClassModelError)
+			limit := o.MaxThinkFails
+			if limit <= 0 {
+				limit = 20 // safety floor — never spin forever on a model that can't format JSON
+			}
+			if o.thinkFails >= limit {
+				o.logf("ABANDON: model emitted invalid Task JSON %d times in a row", o.thinkFails)
+				return OutcomeExhausted
+			}
 			continue
 		}
+		o.thinkFails = 0
+		o.steps++
 		o.forking = false
 		o.logf("step=%d THINK id=%s mode=%s channel=%s", o.steps, task.ID, task.Mode, task.Assertion.Channel)
 

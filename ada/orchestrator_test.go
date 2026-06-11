@@ -179,6 +179,47 @@ func TestStuckCounterSurvivesFork(t *testing.T) {
 	}
 }
 
+// TestParseErrorsDoNotConsumeStepBudget: invalid-JSON emissions are the model's
+// own fixable mistake and must NOT spend the step budget — otherwise a tight
+// -goal-steps dies on a transient hiccup (the observed "goal 1 → EXHAUSTED" with
+// /etc/os-release never even checked). They retry for free until valid JSON lands.
+func TestParseErrorsDoNotConsumeStepBudget(t *testing.T) {
+	calls := 0
+	llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) {
+		calls++
+		if calls <= 3 {
+			return Task{}, errInvalid("incomplete Task")
+		}
+		return Task{
+			ID: "done", Command: "true", Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+			Assertion: Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode},
+		}, nil
+	}}
+	orch := NewOrchestrator("x", llm, NewRuntime())
+	orch.MaxSteps = 2 // tiny budget; 3 parse errors would exhaust it if they counted
+	orch.MaxThinkFails = 5
+	if got := orch.Run(context.Background()); got != OutcomeFinished {
+		t.Fatalf("parse errors must not consume the step budget; want FINISHED got %s", got)
+	}
+	if orch.steps != 1 {
+		t.Errorf("only the real execution should count as a step, got %d", orch.steps)
+	}
+}
+
+// TestThinkFailsCapAbandons: a model that can NEVER produce valid JSON still
+// terminates (it doesn't spin forever on free retries).
+func TestThinkFailsCapAbandons(t *testing.T) {
+	llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) {
+		return Task{}, errInvalid("always broken")
+	}}
+	orch := NewOrchestrator("x", llm, NewRuntime())
+	orch.MaxSteps = 50
+	orch.MaxThinkFails = 3
+	if got := orch.Run(context.Background()); got != OutcomeExhausted {
+		t.Fatalf("a model stuck on invalid JSON must abandon, got %s", got)
+	}
+}
+
 // TestParseErrorBecomesAnomaly: a model that breaks its JSON contract must not
 // crash the loop; the failure is fed back as a model_error anomaly (§9.2).
 func TestParseErrorBecomesAnomaly(t *testing.T) {
