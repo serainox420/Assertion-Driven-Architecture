@@ -142,6 +142,43 @@ func TestDistinctProgressDoesNotStall(t *testing.T) {
 	}
 }
 
+// TestStuckGoalAbandonsFast: a goal whose assertion can never pass (the observed
+// "check zsh installed" / "/home/user/.zshrc" disasters) must abandon after about
+// MaxStuck steps — NOT grind to the step budget. A Hard Context Fork resets the
+// entropy/failure counters, so the stuck counter (which a fork must not reset) is
+// what guarantees termination.
+func TestStuckGoalAbandonsFast(t *testing.T) {
+	steps := 0
+	llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) {
+		steps++
+		return Task{ // asserts a path that never exists → fails every time
+			ID: "check", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "fs", Pattern: "/no/such/ada-stuck-xyz", Channel: ChannelFS},
+		}, nil
+	}}
+	orch := NewOrchestrator("impossible check", llm, NewRuntime())
+	orch.MaxSteps = 200 // would be 200 LLM calls without the stuck guard
+	orch.MaxStuck = 6
+
+	if got := orch.Run(context.Background()); got != OutcomeExhausted {
+		t.Fatalf("a hopeless goal should abandon as EXHAUSTED, got %s", got)
+	}
+	if orch.steps > orch.MaxStuck+1 {
+		t.Errorf("expected to abandon in ~%d steps, took %d", orch.MaxStuck, orch.steps)
+	}
+}
+
+// TestStuckCounterSurvivesFork: progress resets the stuck counter, but a Hard
+// Context Fork must NOT — otherwise a fork-on-failure loop never terminates.
+func TestStuckCounterSurvivesFork(t *testing.T) {
+	orch := NewOrchestrator("x", &MockLLM{}, NewRuntime())
+	orch.stuckSteps = 4
+	orch.HardContextFork()
+	if orch.stuckSteps != 4 {
+		t.Errorf("HardContextFork must not reset stuckSteps, got %d", orch.stuckSteps)
+	}
+}
+
 // TestParseErrorBecomesAnomaly: a model that breaks its JSON contract must not
 // crash the loop; the failure is fed back as a model_error anomaly (§9.2).
 func TestParseErrorBecomesAnomaly(t *testing.T) {

@@ -37,6 +37,7 @@ func main() {
 		goalSteps  = flag.Int("goal-steps", 40, "planning mode: step budget per sub-goal")
 		maxEntropy = flag.Int("max-entropy", 6, "entropy ceiling that triggers a Hard Context Fork")
 		maxFacts   = flag.Int("max-facts", 15, "fact-folding cap")
+		maxStuck   = flag.Int("max-stuck", 6, "abandon a goal after this many steps with no new verified fact (0 disables)")
 		stall      = flag.Int("stall", 2, "stop after this many consecutive no-progress successes (0 disables)")
 		useMeta    = flag.Bool("meta", false, "enable the heuristic meta-controller")
 		verbose    = flag.Bool("v", true, "log one structured line per loop event")
@@ -77,6 +78,7 @@ func main() {
 		coord.MaxRounds = *maxRounds
 		coord.GoalSteps = *goalSteps
 		coord.MaxEntropy = *maxEntropy
+		coord.MaxStuck = *maxStuck
 		coord.StallBudget = *stall
 		coord.MaxFacts = *maxFacts
 		coord.Log = logf
@@ -94,6 +96,7 @@ func main() {
 	orch.MaxSteps = *maxSteps
 	orch.MaxEntropy = *maxEntropy
 	orch.MaxFacts = *maxFacts
+	orch.MaxStuck = *maxStuck
 	orch.StallBudget = *stall
 	orch.Log = logf
 	if *useMeta {
