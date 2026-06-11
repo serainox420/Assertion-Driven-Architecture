@@ -1,6 +1,7 @@
 package ada
 
 import (
+	"context"
 	"encoding/base64"
 	"os"
 	"os/exec"
@@ -243,6 +244,23 @@ func TestProcessExcludesSelf(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // let it appear in the process table
 	if !checkProcess(`sleep 30`) {
 		t.Error("a real running process must still match")
+	}
+}
+
+// The operator must be able to see WHY a command failed — the reason was
+// previously buried in the Base64 anomaly. LastError surfaces a decoded snippet.
+func TestLastErrorSurfacesStderr(t *testing.T) {
+	llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) {
+		return Task{
+			ID: "x", Command: `echo "boom-marker-xyz" >&2; exit 3`, Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode},
+		}, nil
+	}}
+	orch := NewOrchestrator("x", llm, NewRuntime())
+	orch.MaxStuck = 2
+	orch.Run(context.Background())
+	if !strings.Contains(orch.LastError, "boom-marker-xyz") {
+		t.Errorf("LastError should surface the command stderr, got %q", orch.LastError)
 	}
 }
 

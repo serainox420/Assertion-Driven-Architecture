@@ -46,7 +46,9 @@ HARD RULES
 4. ABSOLUTE PATHS. Each command is a fresh, stateless bash session. cd and env exports DO NOT
    persist. To persist, write a file and source it next turn — the runtime tracks it for you.
 5. NON-INTERACTIVE ONLY. There is no TTY. Commands that prompt for input (su, passwd, editors)
-   will hang. Use non-interactive equivalents.
+   will hang or fail. Use non-interactive flags. Package installs MUST pass the no-confirm flag —
+   pacman -S --noconfirm, apt-get install -y, dnf install -y — and need a large timeout_sec
+   (e.g. 300) because they download.
 6. LONG-RUNNING PROCESSES. For anything that keeps running (a server, a watcher, a sleep), use
    "mode": "daemon" — NOT "blocking" — and ALWAYS redirect its output so it cannot block the
    runtime: ` + "`mycmd >/dev/null 2>&1 &`" + `. Assert it came up via process/service (e.g. the

@@ -32,7 +32,12 @@ type Coordinator struct {
 
 	facts     []Fact
 	completed []string
+	lastError string
 }
+
+// LastError returns a decoded snippet of the most recent failing command's output
+// across all sub-goals — the "why" behind a STABLE/EXHAUSTED run.
+func (c *Coordinator) LastError() string { return c.lastError }
 
 // NewCoordinator returns a Coordinator with documented defaults. Pass the same
 // model object as both llm and planner unless you want a driver/worker split.
@@ -136,5 +141,8 @@ func (c *Coordinator) runSubgoal(ctx context.Context, subgoal string) Outcome {
 
 	outcome := o.Run(ctx)
 	c.facts = dedupFacts(o.Snapshot.EstablishedFacts)
+	if o.LastError != "" {
+		c.lastError = o.LastError
+	}
 	return outcome
 }
