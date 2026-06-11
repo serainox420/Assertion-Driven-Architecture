@@ -132,11 +132,21 @@ exercise it inside a throwaway container that **cannot touch the host**. The
 - **No host filesystem access.** `/ada` is *copied into the image at build time*,
   not bind-mounted — anything the sandbox does to `/ada` stays in the sandbox.
 - **No host networking.** It runs on an isolated bridge; the host's Ollama is
-  still reachable at `$OLLAMA_HOST_URL` (`http://host.docker.internal:11434`).
+  still reachable over the Docker gateway (address: `http://172.17.0.1:11434`,
+  exported as `$OLLAMA_HOST_URL` inside the container).
 - **Privilege/limits hardening.** `no-new-privileges`, a `pids_limit`, and
   optional `mem_limit`/`cpus` caps so a runaway can't exhaust the host.
 - **Persistent state.** The container plus a docker-managed `ada-home` volume
   (`/root`) survive `stop`/`start`/`rebuild`.
+
+**⚠️ Important:** Ollama must listen on `0.0.0.0:11434` (all interfaces), not
+just `127.0.0.1`. Start the server with:
+
+```bash
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+```
+
+Or set it permanently in `~/.config/ollama/ollama.env` (path varies by OS).
 
 | Command | Does |
 |---------|------|
@@ -146,6 +156,7 @@ exercise it inside a throwaway container that **cannot touch the host**. The
 | `make down` | Remove the container (keeps the `ada-home` volume) |
 | `make rebuild` | Rebuild the image from scratch and re-populate `/ada` |
 | `make refresh` | Re-populate `/ada` from the host working dir **without** a rebuild |
+| `make clean-sandbox` | Completely remove the container, image, and volume |
 
 ```bash
 make up                 # build + start once
@@ -153,9 +164,10 @@ make shell              # hack inside; nothing leaks to the host
 # edit files on the host, then push them into the live sandbox:
 make refresh            # /ada now matches your working tree (no rebuild)
 make stop               # later: make start — state is exactly as you left it
+make clean-sandbox      # nuke everything if needed
 ```
 
-Inside the sandbox, point the agent at the host's model server explicitly:
+Inside the sandbox, point the agent at the host's model server:
 
 ```bash
 make run ARGS="-objective '...' -ollama $OLLAMA_HOST_URL"

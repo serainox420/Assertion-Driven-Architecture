@@ -17,12 +17,12 @@ services:
 
     # ── Network ─────────────────────────────────────────────────────────────
     # Isolated bridge network (NOT host networking). The host's Ollama is still
-    # reachable over the docker gateway, so model traffic keeps working. Inside
-    # the sandbox use $OLLAMA_HOST_URL (already exported below).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # reachable over the docker gateway (172.17.0.1 for default bridge).
+    # IMPORTANT: Ollama must be listening on 0.0.0.0, not 127.0.0.1. Start it with:
+    #   OLLAMA_HOST=0.0.0.0:11434 ollama serve
+    # Or set it in ~/.config/ollama/ollama.env (depends on your OS/distro).
     environment:
-      - OLLAMA_HOST_URL=http://host.docker.internal:11434
+      - OLLAMA_HOST_URL=http://172.17.0.1:11434
 
     volumes:
       # Persistent home: installed tooling, Go build cache, shell history and any
@@ -45,3 +45,4 @@ services:
 
 volumes:
   ada-home:
+
