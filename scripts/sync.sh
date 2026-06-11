@@ -5,36 +5,64 @@
 # local copy, prints exactly what differs, and (after you confirm) overwrites the
 # local files in place. One command instead of stash/pull/resolve gymnastics.
 #
-# Usage:
-#   scripts/sync.sh                 # sync current branch from origin, prompt before writing
-#   scripts/sync.sh --branch main   # sync a specific branch
-#   scripts/sync.sh --remote URL    # sync from a specific remote URL
+# Direct usage (pass flags straight — NO "FLAGS="):
+#   scripts/sync.sh                 # sync current branch from origin
+#   scripts/sync.sh --branch main   # a specific branch
+#   scripts/sync.sh --remote URL    # a specific remote URL
 #   scripts/sync.sh --dry-run       # show differences, never write
 #   scripts/sync.sh --yes           # don't prompt, just apply
 #
+# Via make (this is where FLAGS= belongs):
+#   make sync FLAGS="--remote URL --dry-run"
+#
+# Env overrides: ADA_SYNC_REMOTE, ADA_SYNC_BRANCH.
 # Only files TRACKED in the fresh clone are considered, so build artifacts and
-# gitignored files are never touched. Files that exist only locally are reported
-# but left alone (nothing is deleted).
+# gitignored files are never touched. Local-only files are reported, never deleted.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# Last-resort remote when none is configured and none is passed.
+DEFAULT_REMOTE="${ADA_SYNC_REMOTE:-https://github.com/serainox420/Assertion-Driven-Architecture.git}"
+
 main() {
   require git
-  local branch remote dry_run=0 assume_yes=0
-  branch="$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-  remote="$(git -C "${ROOT}" remote get-url origin 2>/dev/null || true)"
 
+  # Run git against the (possibly other-owned) local repo without tripping the
+  # "dubious ownership" guard — the usual reason detection fails when run as root.
+  git_local() { git -C "${ROOT}" -c safe.directory="${ROOT}" "$@"; }
+
+  local branch="" remote="" dry_run=0 assume_yes=0
+
+  # Parse flags first so an explicit --remote/--branch wins over detection.
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --branch) branch="$2"; shift 2 ;;
       --remote) remote="$2"; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       --yes|-y) assume_yes=1; shift ;;
-      -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
-      *) die "unknown flag: $1" ;;
+      -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
+      *=*) die "'$1' looks like make syntax. Use:  make sync FLAGS='--remote URL'  — or call the script directly:  scripts/sync.sh --remote URL" ;;
+      *) die "unknown flag: $1 (try --help)" ;;
     esac
   done
-  [[ -n "${remote}" ]] || die "no remote URL (pass --remote URL)"
+
+  # Resolve the remote: explicit flag > origin > first remote > env/default.
+  [[ -z "${remote}" ]] && remote="$(git_local remote get-url origin 2>/dev/null || true)"
+  if [[ -z "${remote}" ]]; then
+    local first; first="$(git_local remote 2>/dev/null | head -n1)"
+    [[ -n "${first}" ]] && remote="$(git_local remote get-url "${first}" 2>/dev/null || true)"
+  fi
+  [[ -z "${remote}" ]] && remote="${DEFAULT_REMOTE}"
+  [[ -n "${remote}" ]] || die "no remote URL; pass --remote URL or set ADA_SYNC_REMOTE"
+
+  # Resolve the branch: explicit flag > env > current branch > remote's default > main.
+  [[ -z "${branch}" ]] && branch="${ADA_SYNC_BRANCH:-}"
+  [[ -z "${branch}" ]] && branch="$(git_local symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [[ -z "${branch}" ]]; then
+    branch="$(git ls-remote --symref "${remote}" HEAD 2>/dev/null \
+      | awk '/^ref:/{sub(/refs\/heads\//,"",$2); print $2; exit}')"
+  fi
+  [[ -n "${branch}" ]] || branch="main"
 
   local tmp; tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
@@ -42,7 +70,7 @@ main() {
 
   info "cloning ${branch} from ${remote%%@*}…"   # hide any embedded creds in logs
   git clone --quiet --depth 1 --branch "${branch}" "${remote}" "${tmp}/repo" \
-    || die "clone failed (branch '${branch}' may not exist on the remote)"
+    || die "clone failed — check the remote is reachable and branch '${branch}' exists (pass --branch NAME)"
 
   # ── Compare tracked files ───────────────────────────────────────────────────
   local -a changed=() added=()
@@ -57,7 +85,7 @@ main() {
 
   local total=$(( ${#changed[@]} + ${#added[@]} ))
   if [[ ${total} -eq 0 ]]; then
-    ok "already up to date — no tracked file differs"
+    ok "already up to date — no tracked file differs from ${branch}"
     return 0
   fi
 
@@ -75,6 +103,7 @@ main() {
   for f in "${added[@]}"; do
     printf '  %snew    %s  %-40s %s\n' "${_C_GRN}" "${_C_RST}" "${f}" "$(numstat /dev/null "${tmp}/repo/${f}")"
   done
+  warn "'changed' files include any LOCAL edits you have not pushed — review before replacing."
 
   if [[ ${dry_run} -eq 1 ]]; then
     warn "dry-run: ${total} file(s) would be updated; nothing written"
