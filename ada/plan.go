@@ -17,9 +17,10 @@ type PlanDecision struct {
 // PlanInput is everything the planner sees: the pinned objective, the verified
 // facts so far, and which sub-goals are already complete. No raw history (§7).
 type PlanInput struct {
-	Objective string   `json:"objective"`
-	Facts     []Fact   `json:"established_facts"`
-	Completed []string `json:"completed_subgoals"`
+	Objective   string   `json:"objective"`
+	Environment []string `json:"environment,omitempty"` // durable host facts (§5.3)
+	Facts       []Fact   `json:"established_facts"`
+	Completed   []string `json:"completed_subgoals"`
 }
 
 // Planner turns a high-level objective + verified facts into the next concrete
