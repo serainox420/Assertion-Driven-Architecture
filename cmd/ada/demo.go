@@ -18,7 +18,7 @@ import (
 //  2. real work proven by an independent fs check → a STRONG fact (§3.2)
 //  3. an env_deterministic failure (read before create) → no value in retrying (§8.2)
 //  4. adaptation → create the file, prove it independently → done.
-func runDemo(ctx context.Context, logf func(string, ...any)) {
+func runDemo(ctx context.Context, p painter, logf func(string, ...any)) {
 	work, err := os.MkdirTemp("", "ada-demo-")
 	if err != nil {
 		panic(err)
@@ -102,6 +102,5 @@ func runDemo(ctx context.Context, logf func(string, ...any)) {
 	}
 
 	outcome := orch.Run(ctx)
-	fmt.Printf("\n=== DEMO COMPLETE: %s ===\n", outcome)
-	printFacts(orch.Snapshot)
+	printSummary(p, "DEMO COMPLETE", outcome, "", orch.Snapshot, "")
 }

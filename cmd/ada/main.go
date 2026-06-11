@@ -41,14 +41,22 @@ func main() {
 		stall      = flag.Int("stall", 2, "stop after this many consecutive no-progress successes (0 disables)")
 		useMeta    = flag.Bool("meta", false, "enable the heuristic meta-controller")
 		verbose    = flag.Bool("v", true, "log one structured line per loop event")
+		colorMode  = flag.String("color", "auto", "colorize the live log: auto|always|never")
 	)
 	flag.Parse()
 
+	color := resolveColor(*colorMode, os.Stderr)
+	pretty := color || isTTY(os.Stderr) // pretty layout whenever interactive or forced
 	logger := log.New(os.Stderr, "ada ", log.Ltime)
 	logf := func(format string, args ...any) {}
 	if *verbose {
-		logf = func(format string, args ...any) { logger.Printf(format, args...) }
+		if pretty {
+			logf = newPrettyLogf(os.Stderr, color)
+		} else {
+			logf = func(format string, args ...any) { logger.Printf(format, args...) }
+		}
 	}
+	pnt := painter{color}
 
 	// Ctrl-C produces a clean, observable shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -56,9 +64,9 @@ func main() {
 
 	if *demo {
 		if *plan {
-			runPlanDemo(ctx, logf)
+			runPlanDemo(ctx, pnt, logf)
 		} else {
-			runDemo(ctx, logf)
+			runDemo(ctx, pnt, logf)
 		}
 		return
 	}
@@ -84,14 +92,8 @@ func main() {
 		coord.Log = logf
 
 		outcome, dec := coord.Run(ctx)
-		fmt.Printf("\n=== PLAN RUN COMPLETE: %s ===\n", outcome)
-		fmt.Printf("Planner: %s\n", dec.Reason)
-		printFacts(ada.StateSnapshot{Objective: *objective, EstablishedFacts: coord.Facts()})
-		if outcome != ada.OutcomeFinished {
-			if e := coord.LastError(); e != "" {
-				fmt.Printf("Last command error: %s\n", e)
-			}
-		}
+		printSummary(pnt, "PLAN RUN COMPLETE", outcome, dec.Reason,
+			ada.StateSnapshot{Objective: *objective, EstablishedFacts: coord.Facts()}, coord.LastError())
 		return
 	}
 
@@ -110,31 +112,17 @@ func main() {
 	}
 
 	outcome := orch.Run(ctx)
-	fmt.Printf("\n=== RUN COMPLETE: %s ===\n", outcome)
-	printFacts(orch.Snapshot)
-	if outcome != ada.OutcomeFinished && orch.LastError != "" {
-		fmt.Printf("Last command error: %s\n", orch.LastError)
-	}
+	printSummary(pnt, "RUN COMPLETE", outcome, "", orch.Snapshot, orch.LastError)
 	switch outcome {
 	case ada.OutcomeStable:
-		fmt.Fprintln(os.Stderr,
+		fmt.Fprintln(os.Stderr, pnt.c("2",
 			"\nnote: the agent reached a stable state — it kept re-verifying facts it had\n"+
 				"      already established without making new progress, so the loop stopped.\n"+
-				"      The objective is likely complete; the model just never set \"final\": true.\n"+
-				"      The established facts above are the verified result.")
+				"      The objective is likely complete; the model just never set \"final\": true."))
 	case ada.OutcomeExhausted:
-		fmt.Fprintln(os.Stderr,
-			"\nhint: the run hit the step budget without finishing or stabilizing.\n"+
-				"      The agent ends when a Task sets \"final\": true, when an external check\n"+
-				"      passes, or when it stops making progress (-stall). Adjust -max-steps,\n"+
-				"      -stall, or refine the objective.")
-	}
-}
-
-func printFacts(s ada.StateSnapshot) {
-	fmt.Printf("Objective: %s\n", s.Objective)
-	fmt.Printf("Established facts (%d):\n", len(s.EstablishedFacts))
-	for _, f := range s.EstablishedFacts {
-		fmt.Printf("  [%s] %s (via %s)\n", f.Strength, f.Statement, f.SourceID)
+		fmt.Fprintln(os.Stderr, pnt.c("2",
+			"\nhint: the run hit the step budget without finishing or stabilizing. The agent\n"+
+				"      ends on \"final\": true, an external check, or no progress (-stall). Adjust\n"+
+				"      -max-steps / -stall / -goal-steps, or refine the objective."))
 	}
 }

@@ -14,7 +14,7 @@ import (
 // open-ended objective into sub-goals, the flat loop completes each, and the
 // planner declares the objective satisfied once the facts prove it — no model
 // server needed. Mirrors how the real Coordinator + OllamaLLM behave.
-func runPlanDemo(ctx context.Context, logf func(string, ...any)) {
+func runPlanDemo(ctx context.Context, p painter, logf func(string, ...any)) {
 	work, err := os.MkdirTemp("", "ada-plandemo-")
 	if err != nil {
 		panic(err)
@@ -71,7 +71,6 @@ func runPlanDemo(ctx context.Context, logf func(string, ...any)) {
 	coord.Log = logf
 
 	outcome, dec := coord.Run(ctx)
-	fmt.Printf("\n=== PLAN DEMO COMPLETE: %s ===\n", outcome)
-	fmt.Printf("Planner: %s\n", dec.Reason)
-	printFacts(ada.StateSnapshot{Objective: coord.Objective, EstablishedFacts: coord.Facts()})
+	printSummary(p, "PLAN DEMO COMPLETE", outcome, dec.Reason,
+		ada.StateSnapshot{Objective: coord.Objective, EstablishedFacts: coord.Facts()}, coord.LastError())
 }
