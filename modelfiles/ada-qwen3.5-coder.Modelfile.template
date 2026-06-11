@@ -1,0 +1,24 @@
+# ada-qwen3.5-coder — TEMPLATE, not buildable yet.
+#
+# Qwen3.5-Coder is not published on the Ollama library as of 2026-06
+# (https://ollama.com/library/qwen3.5-coder is a 404). When it lands:
+#
+#   1. pick the q8_0 tag from https://ollama.com/library/qwen3.5-coder/tags
+#      (or the fp16 tag if you have the memory — there is no "q16")
+#   2. replace the FROM line below with that exact tag
+#   3. rename this file to ada-qwen3.5-coder.Modelfile (drop ".template" —
+#      scripts/create-model.sh only builds *.Modelfile)
+#   4. scripts/create-model.sh ada-qwen3.5-coder
+#
+# If the release is a thinking/hybrid model, also confirm it can disable
+# reasoning blocks: ADA's contract is ONE raw JSON object per turn, and a
+# <think> preamble would fail ParseTask every time.
+FROM qwen3.5-coder:REPLACE-WITH-Q8_0-TAG
+
+# See ada-qwen2.5-coder.Modelfile for the rationale behind each parameter.
+# ada/llm.go overrides temperature/top_p/num_predict/num_ctx per request.
+PARAMETER temperature 0
+PARAMETER top_p 0.1
+PARAMETER num_ctx 8192
+PARAMETER num_predict 1024
+PARAMETER repeat_penalty 1.0
