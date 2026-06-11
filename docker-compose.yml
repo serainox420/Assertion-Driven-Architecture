@@ -1,15 +1,47 @@
 services:
   arch:
     build: .
+    image: ada-sandbox:latest
     container_name: ada-sandbox
+
+    # ── Isolation ───────────────────────────────────────────────────────────
+    # /ada is baked into the image (see Dockerfile), so there is NO bind mount of
+    # the host working tree — the sandbox cannot read or write the host's copy.
+    # The only host path it can ever touch is the optional ./.shared mount below.
+    security_opt:
+      - no-new-privileges:true       # processes can never gain extra privileges
+    pids_limit: 4096                  # cap runaway fork bombs from exhausting host
+    # Uncomment to also cap how much host CPU/RAM the sandbox may consume:
+    # mem_limit: 8g
+    # cpus: 4.0
+
+    # ── Network ─────────────────────────────────────────────────────────────
+    # Isolated bridge network (NOT host networking). The host's Ollama is still
+    # reachable over the docker gateway, so model traffic keeps working. Inside
+    # the sandbox use $OLLAMA_HOST_URL (already exported below).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_HOST_URL=http://host.docker.internal:11434
+
     volumes:
-      - .:/ada
+      # Persistent home: installed tooling, Go build cache, shell history and any
+      # other /root state survive stop/start/rebuild. Docker-managed volume — it
+      # is NOT a host directory.
       - ada-home:/root
+
+      # ── Optional shared folder (OFF by default) ──────────────────────────
+      # Uncomment to expose a single shared directory, then `make up` to apply
+      # (this recreates the container; the ada-home volume is preserved).
+      # Re-comment + `make up` to turn it back OFF at any time.
+      #   host ./.shared   <->   /shared in the sandbox
+      # This is the ONLY host path the sandbox can touch when enabled.
+      # - ./.shared:/shared
+
     tty: true
     stdin_open: true
     restart: unless-stopped
     command: sleep infinity
-    network_mode: host
-    
+
 volumes:
   ada-home:
