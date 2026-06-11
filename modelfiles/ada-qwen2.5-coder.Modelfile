@@ -1,0 +1,39 @@
+# ada-qwen2.5-coder — Qwen2.5-Coder 14B Instruct at q8_0, tuned for the ADA loop.
+#
+# Build:  ollama create ada-qwen2.5-coder -f modelfiles/ada-qwen2.5-coder.Modelfile
+#         (or just: scripts/create-model.sh)
+# Use:    ADA_MODEL=ada-qwen2.5-coder make bench
+#         bin/ada_agent -objective "..." -model ada-qwen2.5-coder
+#
+# Why q8_0: the library default tag (qwen2.5-coder:14b) is q4_K_M. 4-bit
+# quantization measurably degrades strict-format output — the run logs are full
+# of "incomplete Task: id/command/assertion.channel are required", i.e. the
+# model emitting structurally valid JSON with empty or truncated fields. q8_0
+# roughly halves the quantization error for ~2x the memory (~16 GB weights).
+#
+# There is no "q16": the 16-bit option is the UNquantized fp16 tag —
+# qwen2.5-coder:14b-instruct-fp16 (~30 GB). Swap the FROM line if you have the
+# (V)RAM; everything else stays the same.
+FROM qwen2.5-coder:14b-instruct-q8_0
+
+# NOTE: ada/llm.go sets temperature, top_p, num_predict and num_ctx PER REQUEST,
+# which overrides these PARAMETERs. They are set anyway so that a standalone
+# `ollama run` / raw /api/generate call behaves like the agent, and to cover
+# options the agent does not send (repeat_penalty).
+
+# Deterministic decoding by default — reliability where we want it; the
+# orchestrator raises the temperature itself on a Hard Context Fork (§9.3).
+PARAMETER temperature 0
+PARAMETER top_p 0.1
+
+# Matches OllamaLLM.NumCtx: the compacted StateSnapshot fits comfortably (§7).
+PARAMETER num_ctx 8192
+
+# Headroom so a long Task JSON is never truncated mid-object.
+PARAMETER num_predict 1024
+
+# Repetition penalty corrupts strict JSON: it penalizes exactly the tokens a
+# schema forces the model to repeat every emission ("{", '"', "pattern",
+# "channel", ...). Ollama's default is 1.1; neutralize it for
+# grammar-constrained decoding.
+PARAMETER repeat_penalty 1.0

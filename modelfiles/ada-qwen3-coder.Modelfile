@@ -1,0 +1,23 @@
+# ada-qwen3-coder — Qwen3-Coder 30B-A3B (MoE) at q8_0, tuned for the ADA loop.
+#
+# Build:  ollama create ada-qwen3-coder -f modelfiles/ada-qwen3-coder.Modelfile
+#         (or just: scripts/create-model.sh)
+# Use:    ADA_MODEL=ada-qwen3-coder make bench
+#
+# 30B total / 3B ACTIVE parameters (mixture-of-experts): despite the 32 GB of
+# q8_0 weights it decodes at roughly 3B-dense speed, so it is a practical
+# upgrade over qwen2.5-coder:14b when the memory is there. The library default
+# tag (qwen3-coder:30b) is q4_K_M; the "q16" option is the unquantized fp16 tag
+# — qwen3-coder:30b-a3b-fp16 (~61 GB) — swap the FROM line if you can fit it.
+#
+# Qwen3-Coder is a non-thinking instruct model: no <think> blocks to leak into
+# the output, so it is drop-in safe for ADA's JSON-only contract.
+FROM qwen3-coder:30b-a3b-q8_0
+
+# See ada-qwen2.5-coder.Modelfile for the rationale behind each parameter.
+# ada/llm.go overrides temperature/top_p/num_predict/num_ctx per request.
+PARAMETER temperature 0
+PARAMETER top_p 0.1
+PARAMETER num_ctx 8192
+PARAMETER num_predict 1024
+PARAMETER repeat_penalty 1.0

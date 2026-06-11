@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help deps build test race demo run model package clean fmt sync bench \
+.PHONY: help deps build test race demo run model create-models package clean fmt sync bench \
         up rebuild refresh shell stop start down
 
 help: ## Show this help
@@ -34,6 +34,9 @@ run: ## Run the agent. Pass args via ARGS="-objective '...' -model qwen2.5-coder
 
 model: ## Ensure Ollama is up and pull the worker model (override with MODEL=tag)
 	scripts/model.sh $(MODEL)
+
+create-models: ## Build the ADA-tuned q8_0 models from modelfiles/ (NAMES="ada-qwen3-coder" for a subset)
+	scripts/create-model.sh $(NAMES)
 
 package: ## Build the portable ada_toolkit tarball into dist/
 	scripts/package.sh
