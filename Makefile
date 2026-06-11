@@ -50,6 +50,9 @@ clean: ## Remove build artifacts and benchmark results
 # ── Sandbox (isolated Docker container) ───────────────────────────────────────
 # /ada is baked into the image, so the sandbox cannot touch the host tree. State
 # (this container + the ada-home volume) persists across stop/start.
+#
+# IMPORTANT: Ollama must listen on 0.0.0.0:11434, not 127.0.0.1. Start it with:
+#   OLLAMA_HOST=0.0.0.0:11434 ollama serve
 
 up: ## Start the sandbox (builds the image once if it doesn't exist; preserves state)
 	docker compose up -d
@@ -71,3 +74,8 @@ start: ## Resume a stopped sandbox with its state intact
 
 down: ## Stop and remove the container (the ada-home volume is kept)
 	docker compose down
+
+clean-sandbox: ## Completely remove the sandbox (container, image, volume, everything)
+	-docker compose down -v
+	-docker rmi ada-sandbox:latest
+	@echo "sandbox cleaned"
