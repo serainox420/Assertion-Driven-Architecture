@@ -1,0 +1,12 @@
+# What NOT to bake into the image when /ada is populated (COPY . /ada).
+# Keep this in sync with the excludes in scripts/sandbox-sync.sh.
+.git
+.gitignore
+bin
+dist
+outputs
+*.gguf
+benchmark/results
+training/.venv
+# The optional host<->sandbox shared folder is a runtime mount, never baked in.
+.shared

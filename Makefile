@@ -4,7 +4,8 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help deps build test race demo run model package clean fmt sync bench
+.PHONY: help deps build test race demo run model package clean fmt sync bench \
+        up rebuild refresh shell stop start down
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -46,14 +47,27 @@ bench: ## Run benchmark objectives. LEVEL=L3 for one, empty for all
 clean: ## Remove build artifacts and benchmark results
 	rm -rf bin dist benchmark/results
 
-up: ## Uruchom sandbox w tle
+# ── Sandbox (isolated Docker container) ───────────────────────────────────────
+# /ada is baked into the image, so the sandbox cannot touch the host tree. State
+# (this container + the ada-home volume) persists across stop/start.
+
+up: ## Start the sandbox (builds the image once if it doesn't exist; preserves state)
+	docker compose up -d
+
+rebuild: ## Rebuild the image from scratch and re-populate /ada from the working dir
 	docker compose up -d --build
 
-down: ## Zatrzymaj sandbox
-	docker compose down
+refresh: ## Re-populate /ada from the host working dir WITHOUT rebuilding the image
+	scripts/sandbox-sync.sh
 
-shell: ## Połącz się z shellem
+shell: ## Open a bash shell in the running sandbox
 	docker compose exec arch bash
 
-stop: ## Pauza (stan zachowany)
+stop: ## Stop the sandbox, keeping all state (resume with `make start`)
 	docker compose stop
+
+start: ## Resume a stopped sandbox with its state intact
+	docker compose start
+
+down: ## Stop and remove the container (the ada-home volume is kept)
+	docker compose down

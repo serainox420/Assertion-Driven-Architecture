@@ -5,3 +5,5 @@
 /outputs/
 /training/.venv/
 /benchmark/results/
+# Optional host<->sandbox shared folder (see docker-compose.yml)
+/.shared/

@@ -123,6 +123,49 @@ make model                      # pull qwen2.5-coder:14b
 make run ARGS='-objective "create /tmp/app/ready and prove the file exists"'
 ```
 
+### Sandbox (isolated Docker container)
+
+Because ADA's whole job is to run real, state-changing commands, it is safest to
+exercise it inside a throwaway container that **cannot touch the host**. The
+`Dockerfile` / `docker-compose.yml` give you exactly that:
+
+- **No host filesystem access.** `/ada` is *copied into the image at build time*,
+  not bind-mounted — anything the sandbox does to `/ada` stays in the sandbox.
+- **No host networking.** It runs on an isolated bridge; the host's Ollama is
+  still reachable at `$OLLAMA_HOST_URL` (`http://host.docker.internal:11434`).
+- **Privilege/limits hardening.** `no-new-privileges`, a `pids_limit`, and
+  optional `mem_limit`/`cpus` caps so a runaway can't exhaust the host.
+- **Persistent state.** The container plus a docker-managed `ada-home` volume
+  (`/root`) survive `stop`/`start`/`rebuild`.
+
+| Command | Does |
+|---------|------|
+| `make up` | Start the sandbox (builds the image once if missing; preserves state) |
+| `make shell` | Open a bash shell inside the running sandbox |
+| `make stop` / `make start` | Pause / resume with all state intact |
+| `make down` | Remove the container (keeps the `ada-home` volume) |
+| `make rebuild` | Rebuild the image from scratch and re-populate `/ada` |
+| `make refresh` | Re-populate `/ada` from the host working dir **without** a rebuild |
+
+```bash
+make up                 # build + start once
+make shell              # hack inside; nothing leaks to the host
+# edit files on the host, then push them into the live sandbox:
+make refresh            # /ada now matches your working tree (no rebuild)
+make stop               # later: make start — state is exactly as you left it
+```
+
+Inside the sandbox, point the agent at the host's model server explicitly:
+
+```bash
+make run ARGS="-objective '...' -ollama $OLLAMA_HOST_URL"
+```
+
+**Optional shared folder.** A single host↔sandbox bridge directory is wired up
+but **commented out** in `docker-compose.yml` (host `./.shared` ↔ `/shared`).
+Uncomment it and `make up` to turn it on, re-comment and `make up` to turn it
+off — it is the only host path the sandbox can ever touch.
+
 ## Run it
 
 Requires Go 1.22+.
