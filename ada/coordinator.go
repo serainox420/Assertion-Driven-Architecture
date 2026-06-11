@@ -22,6 +22,7 @@ type Coordinator struct {
 	MaxRounds   int     // plan/execute rounds before giving up (safety net)
 	GoalSteps   int     // flat-loop step budget per sub-goal
 	MaxEntropy  int     // forwarded to each sub-goal Orchestrator (§8.3)
+	MaxStuck    int     // forwarded: abandon a sub-goal after N steps with no new fact
 	StallBudget int     // forwarded to each sub-goal Orchestrator (§ stall guard)
 	MaxFacts    int     // fact-folding cap (§7.2)
 	NormalTemp  float64 // executor temp for normal steps (§9.3)
@@ -42,8 +43,9 @@ func NewCoordinator(objective string, llm LLM, planner Planner, rt *Runtime) *Co
 		Planner:     planner,
 		RT:          rt,
 		MaxRounds:   8,
-		GoalSteps:   40,
+		GoalSteps:   25,
 		MaxEntropy:  6,
+		MaxStuck:    6,
 		StallBudget: 2,
 		MaxFacts:    15,
 		NormalTemp:  0.0,
@@ -120,6 +122,7 @@ func (c *Coordinator) runSubgoal(ctx context.Context, subgoal string) Outcome {
 	o := NewOrchestrator(subgoal, c.LLM, c.RT)
 	o.MaxSteps = c.GoalSteps
 	o.MaxEntropy = c.MaxEntropy
+	o.MaxStuck = c.MaxStuck
 	o.StallBudget = c.StallBudget
 	o.MaxFacts = c.MaxFacts
 	o.NormalTemp = c.NormalTemp

@@ -47,12 +47,19 @@ type Orchestrator struct {
 	// Log receives one structured line per significant event for observability.
 	Log func(format string, args ...any)
 
+	// MaxStuck abandons the run when this many steps pass with NO new verified fact
+	// (failures or re-proofs), regardless of Hard Context Forks. This is what bounds
+	// a goal whose strategy is hopeless — without it a fork resets the failure
+	// counters and the loop spins to the step budget. 0 disables.
+	MaxStuck int
+
 	steps            int
 	consecutiveFails int
 	forking          bool            // next generation should sample at ForkTemp (§9.3)
 	completed        bool            // a Final task's assertion held — objective proven complete
 	seen             map[string]bool // verified propositions already established (dedup + stall)
 	dupSuccess       int             // consecutive successes that re-proved existing ground
+	stuckSteps       int             // steps since the last NEW verified fact (not reset by a fork)
 }
 
 // NewOrchestrator returns an orchestrator with documented defaults.
@@ -64,6 +71,7 @@ func NewOrchestrator(objective string, llm LLM, rt *Runtime) *Orchestrator {
 		MaxEntropy:  6,
 		MaxFacts:    15, // hard cap before folding (§7.2)
 		MaxSteps:    200,
+		MaxStuck:    6,   // abandon after this many steps with no new verified fact
 		StallBudget: 2,   // stop after this many consecutive no-progress successes
 		NormalTemp:  0.0, // determinism where we want reliability (§9.3)
 		ForkTemp:    0.8, // entropy where we want exploration (§9.3)
@@ -116,6 +124,7 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 		// Async job completions fold straight back in as strong facts (§4.1).
 		for _, f := range o.RT.PollJobs() {
 			o.addFact(f)
+			o.stuckSteps = 0 // a completed job is progress
 			o.logf("step=%d JOB_DONE %s", o.steps, f.Statement)
 		}
 
@@ -138,6 +147,15 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 				o.steps, o.dupSuccess)
 			return OutcomeStable
 		}
+
+		// Hopeless-strategy guard: if no new verified fact has appeared in MaxStuck
+		// steps — across however many forks — the local approach is exhausted. Abandon
+		// fast instead of grinding to the step budget (a Hard Context Fork resets the
+		// entropy/failure counters, so without this a stuck goal never terminates).
+		if o.MaxStuck > 0 && o.stuckSteps >= o.MaxStuck {
+			o.logf("step=%d STUCK: no new verified fact in %d steps; abandoning this goal", o.steps, o.stuckSteps)
+			return OutcomeExhausted
+		}
 	}
 	return OutcomeExhausted
 }
@@ -158,12 +176,14 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 		key := factKey(task)
 		if o.seen[key] {
 			o.dupSuccess++
+			o.stuckSteps++ // re-proving old ground is not progress
 			o.logf("step=%d NOPROGRESS id=%s key=%q dup=%d/%d",
 				o.steps, task.ID, key, o.dupSuccess, o.StallBudget)
 			return
 		}
 		o.seen[key] = true
 		o.dupSuccess = 0
+		o.stuckSteps = 0 // genuine progress
 		o.addFact(Fact{
 			Statement: factStatement(task),
 			SourceID:  task.ID,
@@ -184,6 +204,7 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 // local strategy is exhausted (§8.2, §8.3).
 func (o *Orchestrator) afterFailure(class string) {
 	o.consecutiveFails++
+	o.stuckSteps++ // a failure is not progress (and the fork won't reset this)
 	o.Snapshot.EntropyLevel += entropyWeight(class)
 	if o.Snapshot.EntropyLevel >= o.MaxEntropy {
 		o.HardContextFork()
