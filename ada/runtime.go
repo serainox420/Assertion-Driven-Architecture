@@ -66,14 +66,20 @@ func (r *Runtime) maxOut() int {
 	return defaultMaxOutput
 }
 
-// muzzle wraps a command in per-task hard limits (virtual memory, file size, CPU
-// seconds) so a runaway action can't starve the host before the timeout fires
-// (§5.4). For stronger isolation, wrap in cgroups/namespaces instead.
+// muzzle wraps a command in generous per-task hard limits so a runaway action
+// can't fill the disk or spin a core indefinitely before the timeout fires (§5.4).
+//
+// Deliberately NO virtual-memory cap: the old `ulimit -v 524288` (512 MiB) was a
+// footgun — virtual memory is a poor proxy for real usage, and it silently killed
+// legitimate work (package installs, runtimes, anything that mmaps or reserves a
+// large arena). We keep a large file-size cap (no accidental disk-fill) and a CPU
+// cap; wall-clock is bounded by the per-task timeout, and real memory isolation
+// belongs in cgroups/namespaces (§5.4), not a brittle `ulimit -v`.
 func (r *Runtime) muzzle(command string) string {
 	if !r.MuzzleULimits {
 		return command
 	}
-	return "ulimit -v 524288 2>/dev/null; ulimit -f 102400 2>/dev/null; ulimit -t 30 2>/dev/null; " + command
+	return "ulimit -f 8388608 2>/dev/null; ulimit -t 600 2>/dev/null; " + command
 }
 
 // Execute dispatches a task by its declared mode and adjudicates its assertion.

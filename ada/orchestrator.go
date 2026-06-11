@@ -47,6 +47,11 @@ type Orchestrator struct {
 	// Log receives one structured line per significant event for observability.
 	Log func(format string, args ...any)
 
+	// LastError holds a decoded snippet of the most recent failing command's
+	// stderr (or stdout) — the "why did it fail" otherwise buried in the Base64
+	// anomaly. Not cleared by a fork, so it survives to the run summary.
+	LastError string
+
 	// MaxStuck abandons the run when this many steps pass with NO new verified fact
 	// (failures or re-proofs), regardless of Hard Context Forks. This is what bounds
 	// a goal whose strategy is hopeless — without it a fork resets the failure
@@ -195,8 +200,18 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 	}
 
 	o.Snapshot.Anomaly = res.Anomaly
-	o.logf("step=%d ANOMALY id=%s class=%s expected=%q exit=%d",
-		o.steps, res.Anomaly.FailedTaskID, res.Anomaly.FailureClass, res.Anomaly.Expected, res.Anomaly.ExitCode)
+	// Decode the buried stderr/stdout so the human log says WHY it failed, not just
+	// that it did. (The Base64 in the payload is the model's injection defense; the
+	// operator log is allowed to read it.)
+	errSnip := decodeForLog(res.Anomaly.ActualErrB64, 200)
+	if errSnip == "" {
+		errSnip = decodeForLog(res.Anomaly.ActualOutB64, 200)
+	}
+	if errSnip != "" {
+		o.LastError = errSnip
+	}
+	o.logf("step=%d ANOMALY id=%s class=%s expected=%q exit=%d err=%q",
+		o.steps, res.Anomaly.FailedTaskID, res.Anomaly.FailureClass, res.Anomaly.Expected, res.Anomaly.ExitCode, errSnip)
 	o.afterFailure(res.Anomaly.FailureClass)
 }
 
@@ -260,6 +275,19 @@ func factStatement(t Task) string {
 	default:
 		return t.ID + " verified"
 	}
+}
+
+// decodeForLog base64-decodes a payload field and renders it as a single short
+// line suitable for the operator log.
+func decodeForLog(b64 string, max int) string {
+	if b64 == "" {
+		return ""
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return ""
+	}
+	return shorten(strings.Join(strings.Fields(string(raw)), " "), max)
 }
 
 func shorten(s string, n int) string {

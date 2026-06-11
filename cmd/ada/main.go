@@ -87,6 +87,11 @@ func main() {
 		fmt.Printf("\n=== PLAN RUN COMPLETE: %s ===\n", outcome)
 		fmt.Printf("Planner: %s\n", dec.Reason)
 		printFacts(ada.StateSnapshot{Objective: *objective, EstablishedFacts: coord.Facts()})
+		if outcome != ada.OutcomeFinished {
+			if e := coord.LastError(); e != "" {
+				fmt.Printf("Last command error: %s\n", e)
+			}
+		}
 		return
 	}
 
@@ -106,6 +111,9 @@ func main() {
 	outcome := orch.Run(ctx)
 	fmt.Printf("\n=== RUN COMPLETE: %s ===\n", outcome)
 	printFacts(orch.Snapshot)
+	if outcome != ada.OutcomeFinished && orch.LastError != "" {
+		fmt.Printf("Last command error: %s\n", orch.LastError)
+	}
 	switch outcome {
 	case ada.OutcomeStable:
 		fmt.Fprintln(os.Stderr,
