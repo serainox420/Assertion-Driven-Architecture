@@ -9,15 +9,20 @@ import (
 	ada "github.com/serainox420/assertion-driven-architecture/ada"
 )
 
-// runDemo exercises the full loop offline with a scripted MockLLM, against a
-// real temp directory so the fs assertions are genuinely independent checks.
+// runDemo exercises the full loop offline with a scripted MockLLM, against a real
+// temp directory so the fs assertions are genuinely independent checks.
 //
-// The scripted "model" deliberately walks through the failure modes ADA exists
-// to handle:
+// The scripted "model" walks the behaviors ADA exists to enforce — now including
+// the richer, more flexible assertion lifecycle:
 //  1. a LAZY self-satisfiable assertion → fail-secure rejection (§3.1, §8.4)
-//  2. real work proven by an independent fs check → a STRONG fact (§3.2)
-//  3. an env_deterministic failure (read before create) → no value in retrying (§8.2)
-//  4. adaptation → create the file, prove it independently → done.
+//  2. a PRECONDITION guard: it assumes the app dir exists; the runtime checks that
+//     BEFORE running and gates the command — a wrong guess costs no action (§3)
+//  3. it establishes the missing precondition (mkdir), proven via fs → a STRONG fact
+//  4. it writes the config and CORROBORATES the change with a postcondition that
+//     reads the file's contents back — multi-channel proof, recorded STRONG (§3.2)
+//  5. a doomed approach fails repeatedly; the runtime's escalating DIRECTIVE makes
+//     the model change method (bounded non-linear recovery), and it proves readiness
+//     a different, independent way → done.
 func runDemo(ctx context.Context, p painter, logf func(string, ...any)) {
 	work, err := os.MkdirTemp("", "ada-demo-")
 	if err != nil {
@@ -25,8 +30,9 @@ func runDemo(ctx context.Context, p painter, logf func(string, ...any)) {
 	}
 	defer os.RemoveAll(work)
 
-	configPath := filepath.Join(work, "config.yaml")
-	markerPath := filepath.Join(work, "marker")
+	appDir := filepath.Join(work, "app")
+	configPath := filepath.Join(appDir, "config.yaml")
+	readyPath := filepath.Join(appDir, "ready")
 
 	hasFact := func(s ada.StateSnapshot, id string) bool {
 		for _, f := range s.EstablishedFacts {
@@ -40,65 +46,69 @@ func runDemo(ctx context.Context, p painter, logf func(string, ...any)) {
 		return s.Anomaly != nil && s.Anomaly.FailedTaskID == id
 	}
 
+	// Task constructors for the narrative beats.
+	lazyProbe := ada.Task{
+		ID: "lazy_probe", Command: "echo DONE", Mode: ada.ModeBlocking, TimeoutSec: 5,
+		Assertion: ada.Assertion{Type: "regex", Pattern: ".*", Channel: ada.ChannelStdout},
+	}
+	// write_config ASSUMES the app dir exists (a precondition) and proves the write
+	// two ways: exit_code 0 AND a postcondition that reads the file's contents back.
+	writeConfig := ada.Task{
+		ID: "write_config", Description: fmt.Sprintf("config written at %s", configPath),
+		Command: fmt.Sprintf("printf 'mode: prod\\n' > %s", configPath),
+		Mode:    ada.ModeBlocking, TimeoutSec: 5,
+		Preconditions:  []ada.Assertion{{Type: "dir", Pattern: appDir + "|dir", Channel: ada.ChannelFS}},
+		Assertion:      ada.Assertion{Type: "exit", Pattern: "0", Channel: ada.ChannelExitCode},
+		Postconditions: []ada.Assertion{{Type: "content", Pattern: configPath + "|contains:^mode: prod$", Channel: ada.ChannelFS}},
+	}
+	makeAppDir := ada.Task{
+		ID: "make_appdir", Description: fmt.Sprintf("created app dir %s", appDir),
+		Command: fmt.Sprintf("mkdir -p %s", appDir), Mode: ada.ModeBlocking, TimeoutSec: 5,
+		Assertion: ada.Assertion{Type: "dir", Pattern: appDir + "|dir", Channel: ada.ChannelFS},
+	}
+	// The doomed approach: prove readiness by looking for a daemon that isn't running.
+	portProbe := ada.Task{
+		ID: "prove_ready", Command: "true", Mode: ada.ModeBlocking, TimeoutSec: 5,
+		Assertion: ada.Assertion{Type: "process", Pattern: "ada-demo-daemon-not-running", Channel: ada.ChannelProcess},
+	}
+	// The adaptation: prove readiness a different, independent way — a marker file.
+	readyMarker := ada.Task{
+		ID: "prove_ready", Description: fmt.Sprintf("readiness marker present at %s", readyPath),
+		Command: fmt.Sprintf("touch %s", readyPath), Mode: ada.ModeBlocking, TimeoutSec: 5, Final: true,
+		Assertion: ada.Assertion{Type: "file_exists", Pattern: readyPath, Channel: ada.ChannelFS},
+	}
+
 	llm := &ada.MockLLM{Respond: func(s ada.StateSnapshot) (ada.Task, error) {
 		switch {
-		// Phase 1: establish the config file.
+		// Phase 1: get the config written (lazy rejection, precondition guard, write+corroborate).
 		case !hasFact(s, "write_config"):
-			if anomalyFor(s, "lazy_probe") {
-				// The runtime rejected our lazy probe; do the real work and prove it.
-				return ada.Task{
-					ID:          "write_config",
-					Description: fmt.Sprintf("config written at %s", configPath),
-					Command:     fmt.Sprintf("printf 'mode: prod\\n' > %s", configPath),
-					Mode:        ada.ModeBlocking,
-					TimeoutSec:  5,
-					Assertion:   ada.Assertion{Type: "file_exists", Pattern: configPath, Channel: ada.ChannelFS},
-				}, nil
+			switch {
+			case anomalyFor(s, "write_config") && s.Anomaly.FailureClass == ada.ClassPrecondition:
+				return makeAppDir, nil // the precondition revealed the dir is missing — make it
+			case hasFact(s, "make_appdir"):
+				return writeConfig, nil // dir now exists; the precondition holds → write + corroborate
+			case anomalyFor(s, "lazy_probe"):
+				return writeConfig, nil // after the lazy rejection, attempt the guarded write
+			default:
+				return lazyProbe, nil // very first turn: a lazy assertion the runtime must refuse
 			}
-			// A lazy, self-satisfiable assertion — the runtime must refuse this.
-			return ada.Task{
-				ID:         "lazy_probe",
-				Command:    "echo DONE",
-				Mode:       ada.ModeBlocking,
-				TimeoutSec: 5,
-				Assertion:  ada.Assertion{Type: "regex", Pattern: ".*", Channel: ada.ChannelStdout},
-			}, nil
 
-		// Phase 2: establish the marker file (with one env_deterministic detour).
-		case !hasFact(s, "create_marker"):
-			if anomalyFor(s, "read_marker") {
-				// Reading a file that does not exist was futile; create it instead.
-				return ada.Task{
-					ID:          "create_marker",
-					Description: fmt.Sprintf("marker created at %s", markerPath),
-					Command:     fmt.Sprintf("touch %s", markerPath),
-					Mode:        ada.ModeBlocking,
-					TimeoutSec:  5,
-					Assertion:   ada.Assertion{Type: "file_exists", Pattern: markerPath, Channel: ada.ChannelFS},
-				}, nil
+		// Phase 2: prove readiness — the first method is doomed; heed the directive and adapt.
+		case !hasFact(s, "prove_ready"):
+			if s.Anomaly != nil && s.Anomaly.Directive != "" {
+				return readyMarker, nil // runtime told us to change method — prove it independently instead
 			}
-			// Try to read before creating → "No such file or directory" → env_deterministic.
-			return ada.Task{
-				ID:         "read_marker",
-				Command:    fmt.Sprintf("cat %s", markerPath),
-				Mode:       ada.ModeBlocking,
-				TimeoutSec: 5,
-				Assertion:  ada.Assertion{Type: "exit", Pattern: "0", Channel: ada.ChannelExitCode},
-			}, nil
+			return portProbe, nil
 		}
-		// Nothing left — DoneCheck will terminate the run.
-		return ada.Task{
-			ID: "noop", Command: "true", Mode: ada.ModeBlocking, TimeoutSec: 5,
-			Assertion: ada.Assertion{Type: "exit", Pattern: "0", Channel: ada.ChannelExitCode},
-		}, nil
+		return readyMarker, nil
 	}}
 
 	rt := ada.NewRuntime()
-	orch := ada.NewOrchestrator("create and independently verify a config and a marker file", llm, rt)
+	orch := ada.NewOrchestrator("provision the app config and prove the service is ready — verifying assumptions before acting and corroborating every change", llm, rt)
 	orch.MaxSteps = 20
 	orch.Log = logf
 	orch.DoneCheck = func(s ada.StateSnapshot) bool {
-		return hasFact(s, "write_config") && hasFact(s, "create_marker")
+		return hasFact(s, "write_config") && hasFact(s, "prove_ready")
 	}
 
 	outcome := orch.Run(ctx)

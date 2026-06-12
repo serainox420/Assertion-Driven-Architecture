@@ -60,6 +60,8 @@ func entropyWeight(class string) int {
 		return 1
 	case ClassModelError:
 		return 1
+	case ClassPrecondition:
+		return 1 // a fixable planning mistake: go establish the assumption, then act
 	default:
 		return 1
 	}

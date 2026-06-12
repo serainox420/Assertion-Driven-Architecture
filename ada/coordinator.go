@@ -19,17 +19,19 @@ type Coordinator struct {
 	Planner   Planner  // decomposes + judges completion (may be the same model as LLM)
 	RT        *Runtime // shared deterministic runtime
 
-	MaxRounds   int      // plan/execute rounds before giving up (safety net)
-	GoalSteps   int      // flat-loop step budget per sub-goal
-	MaxEntropy  int      // forwarded to each sub-goal Orchestrator (§8.3)
-	MaxStuck    int      // forwarded: abandon a sub-goal after N steps with no new fact
-	StallBudget int      // forwarded to each sub-goal Orchestrator (§ stall guard)
-	MaxFacts    int      // fact-folding cap (§7.2)
-	NormalTemp  float64  // executor temp for normal steps (§9.3)
-	ForkTemp    float64  // executor temp on a fork (§9.3)
-	PlanTemp    float64  // planner sampling temperature (a little creativity helps decomposition)
-	Environment []string // durable host facts shown to planner + executor (§5.3)
-	Log         func(format string, args ...any)
+	MaxRounds          int      // plan/execute rounds before giving up (safety net)
+	GoalSteps          int      // flat-loop step budget per sub-goal
+	MaxEntropy         int      // forwarded to each sub-goal Orchestrator (§8.3)
+	MaxStuck           int      // forwarded: abandon a sub-goal after N steps with no new fact
+	MaxAttemptsPerTask int      // forwarded: same-proposition tries within a route (§8)
+	MaxRoutes          int      // forwarded: bounded strategies per sub-goal (§8)
+	StallBudget        int      // forwarded to each sub-goal Orchestrator (§ stall guard)
+	MaxFacts           int      // fact-folding cap (§7.2)
+	NormalTemp         float64  // executor temp for normal steps (§9.3)
+	ForkTemp           float64  // executor temp on a fork (§9.3)
+	PlanTemp           float64  // planner sampling temperature (a little creativity helps decomposition)
+	Environment        []string // durable host facts shown to planner + executor (§5.3)
+	Log                func(format string, args ...any)
 
 	facts     []Fact
 	completed []string
@@ -44,22 +46,30 @@ func (c *Coordinator) LastError() string { return c.lastError }
 // model object as both llm and planner unless you want a driver/worker split.
 func NewCoordinator(objective string, llm LLM, planner Planner, rt *Runtime) *Coordinator {
 	return &Coordinator{
-		Objective:   objective,
-		LLM:         llm,
-		Planner:     planner,
-		RT:          rt,
-		Environment: HostFacts(), // tell the agent what host it's on (§5.3)
-		MaxRounds:   8,
-		GoalSteps:   25,
-		MaxEntropy:  6,
-		MaxStuck:    6,
-		StallBudget: 2,
-		MaxFacts:    15,
-		NormalTemp:  0.0,
-		ForkTemp:    0.8,
-		PlanTemp:    0.4,
-		Log:         func(string, ...any) {},
+		Objective:          objective,
+		LLM:                llm,
+		Planner:            planner,
+		RT:                 rt,
+		Environment:        HostFacts(), // tell the agent what host it's on (§5.3)
+		MaxRounds:          8,
+		GoalSteps:          25,
+		MaxEntropy:         6,
+		MaxStuck:           10,
+		MaxAttemptsPerTask: 3,
+		MaxRoutes:          3,
+		StallBudget:        2,
+		MaxFacts:           15,
+		NormalTemp:         0.0,
+		ForkTemp:           0.8,
+		PlanTemp:           0.4,
+		Log:                func(string, ...any) {},
 	}
+}
+
+// Seed pre-loads externally supplied verified facts (e.g. re-validated persistent
+// memory, §5.3) so the planner and executors treat them as already-known.
+func (c *Coordinator) Seed(facts []Fact) {
+	c.facts = dedupFacts(append(c.facts, facts...))
 }
 
 func (c *Coordinator) logf(format string, args ...any) {
@@ -130,6 +140,8 @@ func (c *Coordinator) runSubgoal(ctx context.Context, subgoal string) Outcome {
 	o.MaxSteps = c.GoalSteps
 	o.MaxEntropy = c.MaxEntropy
 	o.MaxStuck = c.MaxStuck
+	o.MaxAttemptsPerTask = c.MaxAttemptsPerTask
+	o.MaxRoutes = c.MaxRoutes
 	o.StallBudget = c.StallBudget
 	o.MaxFacts = c.MaxFacts
 	o.NormalTemp = c.NormalTemp

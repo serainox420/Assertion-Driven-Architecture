@@ -82,16 +82,88 @@ func (r *Runtime) muzzle(command string) string {
 	return "ulimit -f 8388608 2>/dev/null; ulimit -t 600 2>/dev/null; " + command
 }
 
-// Execute dispatches a task by its declared mode and adjudicates its assertion.
+// Execute runs the prior → action → post lifecycle of a task: verify the
+// preconditions (assumptions) hold, dispatch the action by its declared mode,
+// then corroborate a passing result through the postconditions. Each phase is a
+// deterministic state check, never an LLM call (§1).
 func (r *Runtime) Execute(task Task) ExecutionResult {
+	// PRIOR: if the assumptions the action depends on are not already true, do not
+	// run the command at all — report the unmet assumption so the model establishes
+	// it first. A wrong guess thus costs no action (§3, "verify before you act").
+	if res, ok := r.checkPreconditions(task); !ok {
+		return res
+	}
+
+	// ACTION.
+	var res ExecutionResult
 	switch task.Mode {
 	case ModeDaemon:
-		return r.executeDaemon(task)
+		res = r.executeDaemon(task)
 	case ModeJob:
-		return r.executeJob(task)
+		res = r.executeJob(task)
 	default: // ModeBlocking and anything unspecified
-		return r.executeBlocking(task)
+		res = r.executeBlocking(task)
 	}
+
+	// POST: corroborate a passing result through independent channels. Job mode's
+	// real work is asynchronous — its completion is proven later by the artifact —
+	// so the launch itself is not post-checked here.
+	if res.Passed && task.Mode != ModeJob && len(task.Postconditions) > 0 {
+		res = r.applyPostconditions(task, res)
+	}
+	return res
+}
+
+// checkPreconditions evaluates a task's independent-state guards BEFORE the
+// command runs. ok=false means the command must NOT run; the returned result
+// carries the anomaly explaining which assumption failed (or that a precondition
+// used an invalid, non-independent channel). Independent-state channels only:
+// a precondition on stdout/exit_code is meaningless without running something, so
+// it is a contract error rather than a check.
+func (r *Runtime) checkPreconditions(task Task) (ExecutionResult, bool) {
+	for _, p := range task.Preconditions {
+		switch {
+		case !independentChannel(p.Channel):
+			res := r.failed(task, "PRECONDITION_INVALID_CHANNEL: preconditions must use fs/process/service (got "+p.Channel+")", nil, nil, -1)
+			res.Anomaly.FailureClass = ClassModelError
+			return res, false
+		case isLazyAssertion(p):
+			res := r.failed(task, "LAZY_ASSERTION: anchor your precondition pattern (^...$)", nil, nil, -1)
+			res.Anomaly.FailureClass = ClassModelError
+			return res, false
+		case !checkIndependentState(p):
+			res := r.failed(task, "PRECONDITION_UNMET: "+assertionDesc(p)+" — establish this first, then act", nil, nil, -1)
+			res.Anomaly.FailureClass = ClassPrecondition
+			return res, false
+		}
+	}
+	return ExecutionResult{Passed: true}, true
+}
+
+// applyPostconditions re-checks a passing result against additional independent
+// channels (§3.2). A failure here means the command reported success while an
+// independent observation disagrees — the goal was not actually achieved.
+// Surviving corroboration upgrades the fact to STRONG: the state was independently
+// observed, not merely narrated.
+func (r *Runtime) applyPostconditions(task Task, res ExecutionResult) ExecutionResult {
+	for _, q := range task.Postconditions {
+		switch {
+		case !independentChannel(q.Channel):
+			out := r.failed(task, "POSTCONDITION_INVALID_CHANNEL: postconditions must use fs/process/service (got "+q.Channel+")", nil, nil, 0)
+			out.Anomaly.FailureClass = ClassModelError
+			return out
+		case isLazyAssertion(q):
+			out := r.failed(task, "LAZY_ASSERTION: anchor your postcondition pattern (^...$)", nil, nil, 0)
+			out.Anomaly.FailureClass = ClassModelError
+			return out
+		case !checkIndependentState(q):
+			out := r.failed(task, "POSTCONDITION_FAILED: "+assertionDesc(q)+" — the command reported success but an independent check disagrees", nil, nil, 0)
+			out.Anomaly.FailureClass = ClassTransient // the approach did not really work; cheap to re-think
+			return out
+		}
+	}
+	res.Strength = StrengthStrong // independently corroborated ⇒ strong (§3.2)
+	return res
 }
 
 // executeBlocking runs to completion within the timeout, then asserts (§4.1).

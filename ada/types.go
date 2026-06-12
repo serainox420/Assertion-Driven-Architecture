@@ -13,12 +13,32 @@ package ada
 
 // Task is the single hypothesis the model emits per turn.
 type Task struct {
-	ID          string    `json:"id"`          // unique, no spaces — for logs and dedup
-	Description string    `json:"description"` // short rationale, for human logs only
-	Command     string    `json:"command"`     // the action to execute
-	Mode        string    `json:"mode"`        // "blocking" | "daemon" | "job" (see §4.1)
-	TimeoutSec  int       `json:"timeout_sec"` // hard ceiling; runtime enforces
-	Assertion   Assertion `json:"assertion"`   // how we will KNOW it worked
+	ID          string `json:"id"`          // unique, no spaces — for logs and dedup
+	Description string `json:"description"` // short rationale, for human logs only
+	Command     string `json:"command"`     // the action to execute
+	Mode        string `json:"mode"`        // "blocking" | "daemon" | "job" (see §4.1)
+	TimeoutSec  int    `json:"timeout_sec"` // hard ceiling; runtime enforces
+
+	// Preconditions are independent-state checks evaluated BEFORE the command runs:
+	// the assumptions the action depends on. If any fails, the command is NOT
+	// executed and the model receives a `precondition` anomaly — so a wrong guess
+	// costs no action and no destructive command (§3, "verify before you act"). Only
+	// the independent-state channels (fs/process/service) are valid here, because a
+	// precondition must be observable WITHOUT first running the command.
+	Preconditions []Assertion `json:"preconditions,omitempty"`
+
+	Assertion Assertion `json:"assertion"` // the PRIMARY success condition; how we will KNOW it worked
+
+	// Postconditions are ADDITIONAL independent checks evaluated after the primary
+	// assertion holds — corroborating the same outcome through a DIFFERENT channel.
+	// They turn a single observation into multi-channel proof: a result confirmed by
+	// any independent postcondition is recorded as a STRONG fact, because the state
+	// was genuinely observed and not merely narrated (corroboration upgrades strength,
+	// §3.2). If any postcondition fails the step fails — a command that claims success
+	// while an independent channel disagrees did not actually achieve the goal. Only
+	// the independent-state channels (fs/process/service) are valid here.
+	Postconditions []Assertion `json:"postconditions,omitempty"`
+
 	// Final marks the Task whose passing assertion proves the OBJECTIVE itself is
 	// complete. When such a task's assertion holds, the runtime records the fact
 	// and the loop terminates with FINISHED. Completion still requires a passing
@@ -69,6 +89,16 @@ type AnomalyPayload struct {
 	ActualErrB64 string `json:"actual_err_b64"`
 	ExitCode     int    `json:"exit_code"`
 	FailureClass string `json:"failure_class"` // see the Class* constants (§8.2)
+
+	// Attempts is how many times IN A ROW the model has now tried to establish this
+	// same proposition (same target) and failed. Directive is the deterministic
+	// instruction derived from it — e.g. "this approach has failed N×; change method".
+	// Both are set by the orchestrator, not the runtime, and are runtime-authored
+	// (trusted), so unlike the environment output they are NOT Base64-encoded. They
+	// make "stop banging on the same door — improvise" an explicit, bounded signal
+	// the model cannot miss (§8, bounded non-linear recovery).
+	Attempts  int    `json:"attempts,omitempty"`
+	Directive string `json:"directive,omitempty"`
 }
 
 // Failure classes (§8.2). Entropy is incremented with a per-class weight.
@@ -76,6 +106,7 @@ const (
 	ClassTransient        = "transient"         // timeout / temporary contention — cheap retry
 	ClassEnvDeterministic = "env_deterministic" // refused/denied/not-found — retrying is futile
 	ClassModelError       = "model_error"       // malformed JSON / bad command — model can fix it
+	ClassPrecondition     = "precondition"      // an assumption the action depended on was not true — establish it first
 )
 
 // StateSnapshot is the ENTIRE world the model sees on a given turn. The model is

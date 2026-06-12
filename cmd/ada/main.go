@@ -27,21 +27,25 @@ import (
 
 func main() {
 	var (
-		objective  = flag.String("objective", "", "the pinned, immutable objective for the agent")
-		model      = flag.String("model", "qwen2.5-coder:14b", "Ollama model tag for the worker")
-		ollamaURL  = flag.String("ollama", "http://localhost:11434", "Ollama base URL")
-		demo       = flag.Bool("demo", false, "run the offline, model-free demonstration")
-		plan       = flag.Bool("plan", false, "planning mode: decompose an open-ended objective into sub-goals and work them")
-		maxSteps   = flag.Int("max-steps", 200, "global step budget (hard stop)")
-		maxRounds  = flag.Int("max-rounds", 8, "planning mode: max plan/execute rounds")
-		goalSteps  = flag.Int("goal-steps", 40, "planning mode: step budget per sub-goal")
-		maxEntropy = flag.Int("max-entropy", 6, "entropy ceiling that triggers a Hard Context Fork")
-		maxFacts   = flag.Int("max-facts", 15, "fact-folding cap")
-		maxStuck   = flag.Int("max-stuck", 6, "abandon a goal after this many steps with no new verified fact (0 disables)")
-		stall      = flag.Int("stall", 2, "stop after this many consecutive no-progress successes (0 disables)")
-		useMeta    = flag.Bool("meta", false, "enable the heuristic meta-controller")
-		verbose    = flag.Bool("v", true, "log one structured line per loop event")
-		colorMode  = flag.String("color", "auto", "colorize the live log: auto|always|never")
+		objective   = flag.String("objective", "", "the pinned, immutable objective for the agent")
+		model       = flag.String("model", "qwen2.5-coder:14b", "Ollama model tag for the worker")
+		ollamaURL   = flag.String("ollama", "http://localhost:11434", "Ollama base URL")
+		demo        = flag.Bool("demo", false, "run the offline, model-free demonstration")
+		plan        = flag.Bool("plan", false, "planning mode: decompose an open-ended objective into sub-goals and work them")
+		maxSteps    = flag.Int("max-steps", 200, "global step budget (hard stop)")
+		maxRounds   = flag.Int("max-rounds", 8, "planning mode: max plan/execute rounds")
+		goalSteps   = flag.Int("goal-steps", 40, "planning mode: step budget per sub-goal")
+		maxEntropy  = flag.Int("max-entropy", 6, "entropy ceiling that triggers a Hard Context Fork")
+		maxFacts    = flag.Int("max-facts", 15, "fact-folding cap")
+		maxStuck    = flag.Int("max-stuck", 10, "abandon a goal after this many steps with no new verified fact (0 disables)")
+		maxAttempts = flag.Int("max-attempts", 3, "per-proposition tries within a strategy before forcing a new approach (0 disables)")
+		maxRoutes   = flag.Int("max-routes", 3, "bounded alternative strategies (forks) before abandoning a goal (0 disables)")
+		stall       = flag.Int("stall", 2, "stop after this many consecutive no-progress successes (0 disables)")
+		useMeta     = flag.Bool("meta", false, "enable the heuristic meta-controller")
+		useMemory   = flag.Bool("memory", true, "persist & reuse re-validated durable facts across runs")
+		memFile     = flag.String("memory-file", "", "persistent knowledge file (default: $XDG_STATE_HOME/ada/knowledge.json)")
+		verbose     = flag.Bool("v", true, "log one structured line per loop event")
+		colorMode   = flag.String("color", "auto", "colorize the live log: auto|always|never")
 	)
 	flag.Parse()
 
@@ -77,6 +81,14 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Persistent, re-validated knowledge: learn durable facts once, reuse them next
+	// run (§5.3). nil when disabled — every method is nil-safe.
+	mem := ada.OpenMemory(*memFile, *useMemory)
+	if mem != nil {
+		mem.Log = logf
+	}
+	seed := mem.Load() // re-validated strong facts (or none)
+
 	// Planning mode: decompose an open-ended objective into sub-goals and work
 	// them until the planner judges the objective satisfied.
 	if *plan {
@@ -87,11 +99,15 @@ func main() {
 		coord.GoalSteps = *goalSteps
 		coord.MaxEntropy = *maxEntropy
 		coord.MaxStuck = *maxStuck
+		coord.MaxAttemptsPerTask = *maxAttempts
+		coord.MaxRoutes = *maxRoutes
 		coord.StallBudget = *stall
 		coord.MaxFacts = *maxFacts
 		coord.Log = logf
+		coord.Seed(seed)
 
 		outcome, dec := coord.Run(ctx)
+		mem.Save(coord.Facts())
 		printSummary(pnt, "PLAN RUN COMPLETE", outcome, dec.Reason,
 			ada.StateSnapshot{Objective: *objective, EstablishedFacts: coord.Facts()}, coord.LastError())
 		return
@@ -105,13 +121,17 @@ func main() {
 	orch.MaxEntropy = *maxEntropy
 	orch.MaxFacts = *maxFacts
 	orch.MaxStuck = *maxStuck
+	orch.MaxAttemptsPerTask = *maxAttempts
+	orch.MaxRoutes = *maxRoutes
 	orch.StallBudget = *stall
 	orch.Log = logf
+	orch.Seed(seed)
 	if *useMeta {
 		orch.Meta = ada.HeuristicController{MaxEntropy: *maxEntropy}
 	}
 
 	outcome := orch.Run(ctx)
+	mem.Save(orch.Snapshot.EstablishedFacts)
 	printSummary(pnt, "RUN COMPLETE", outcome, "", orch.Snapshot, orch.LastError)
 	switch outcome {
 	case ada.OutcomeStable:
@@ -124,5 +144,10 @@ func main() {
 			"\nhint: the run hit the step budget without finishing or stabilizing. The agent\n"+
 				"      ends on \"final\": true, an external check, or no progress (-stall). Adjust\n"+
 				"      -max-steps / -stall / -goal-steps, or refine the objective."))
+	case ada.OutcomeFailed:
+		fmt.Fprintln(os.Stderr, pnt.c("2",
+			"\nnote: the agent exhausted its bounded alternative strategies (-max-routes ×\n"+
+				"      -max-attempts) without proving the objective. The last error above is the\n"+
+				"      likeliest blocker; refine the objective or raise the recovery budget."))
 	}
 }
