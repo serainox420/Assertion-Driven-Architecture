@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help deps build test race demo run model create-models package clean fmt sync bench \
+.PHONY: help deps build ada tui test race demo run model create-models package clean fmt sync bench \
         up rebuild refresh shell stop start down
 
 help: ## Show this help
@@ -14,8 +14,14 @@ help: ## Show this help
 deps: ## Install dependencies (Go, jq, git, toolchain). Add WITH=--with-ollama etc.
 	scripts/install.sh $(WITH)
 
-build: ## Build the static ada_agent binary into bin/
+build: ## Build both static binaries (ada_agent + the flagship ada) into bin/
 	scripts/build.sh
+
+ada: ## Build just the flagship `ada` binary (CLI + interactive TUI) into bin/
+	scripts/build.sh
+
+tui: ada ## Build and launch the interactive TUI (ada with no args)
+	bin/ada
 
 test: ## gofmt check + go vet + go test
 	scripts/test.sh
