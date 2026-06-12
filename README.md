@@ -27,12 +27,13 @@ ACT (Runtime) →  execute; evaluate assertion against observable state (NO LLM)
 
 | Path | What it owns |
 |------|--------------|
-| `ada/types.go` | The contract: `Task`, `Assertion`, `AnomalyPayload`, `StateSnapshot`, `Fact` (§2) |
-| `ada/runtime.go` | The deterministic muscle: execute, enforce limits, adjudicate; blocking/daemon/job modes (§4) |
-| `ada/assert.go` | Fact strength + independent-channel checks (fs/process/service) and lazy-regex detection (§3, §8.4) |
+| `ada/types.go` | The contract: `Task` (with pre/postconditions), `Assertion`, `AnomalyPayload`, `StateSnapshot`, `Fact` (§2) |
+| `ada/runtime.go` | The deterministic muscle: prior→action→post lifecycle, enforce limits, adjudicate; blocking/daemon/job modes (§4) |
+| `ada/assert.go` | Fact strength + independent-channel checks (fs/process/service), fs content matching, lazy-regex detection (§3, §8.4) |
 | `ada/sanitize.go` | Output truncation + binary detection (§5) |
 | `ada/classify.go` | Failure classification and entropy weighting (§8.2) |
-| `ada/orchestrator.go` | The loop: entropy, fact folding, Hard Context Fork, weak-fact re-validation (§7, §8) |
+| `ada/orchestrator.go` | The loop: entropy, fact folding, Hard Context Fork, weak-fact re-validation, bounded non-linear recovery (§7, §8) |
+| `ada/memory.go` | Persistent, re-validated semantic memory: learn durable facts once, reuse them next run (§5.3) |
 | `ada/llm.go` | `LLM` interface + Ollama client with grammar-constrained JSON decoding (§9) |
 | `ada/mockllm.go` | Offline, deterministic stand-in for a real model |
 | `ada/prompt.go` | The system prompt + JSON schema (§9, §16) |
@@ -71,6 +72,29 @@ The load-bearing correctness claims from the report are implemented, not just de
   fingerprints each verified proposition; when the model re-proves ground it already established
   (a model that won't emit `final` will loop forever), the loop stops on its own with `STABLE`
   after `-stall` consecutive no-progress successes — and duplicate facts are never recorded.
+- **Prior → action → post lifecycle (flexible assertions).** A `Task` carries optional
+  **preconditions** (independent-state guards checked *before* the command — an unmet assumption
+  skips the command entirely, so a wrong guess costs no action) and **postconditions** (extra
+  independent checks *after*). "Verify before you act; verify the outcome in more than one direct
+  way." Pre/postconditions accept fs/process/service only — they must be observable without
+  trusting the command.
+- **Corroboration upgrades strength (§3.2).** A result confirmed by an independent postcondition is
+  recorded as a **strong** fact even when the primary assertion was weak — the state was genuinely
+  observed, not merely narrated. A postcondition that *disagrees* fails the step: a command that
+  claims success while an independent channel says otherwise did not achieve the goal.
+- **`fs` content assertions.** `path|contains:^line$` reads the file back and matches an anchored
+  regex — the bulletproof "read it to confirm the change really landed", as a *strong* independent
+  observation rather than a trusted echo of stdout. Lazy unanchored content patterns are rejected.
+- **Bounded non-linear recovery (§8).** Repeated failure of the *same* proposition is detected
+  deterministically: each anomaly tells the model how many times this exact approach has failed and
+  carries a **directive** to change method; after `-max-attempts` it forces a new strategy (Hard
+  Context Fork), and after `-max-routes` strategies the goal is abandoned as `FAILED`. A finite,
+  nested budget (default 3 × 3 = 9 tries at a stuck point) — improvise only when needed, only within
+  a norm.
+- **Re-validated persistent memory (§5.3).** Durable, independently-checkable strong facts persist
+  across runs, so the agent learns a basic truth once instead of re-deriving it every task. Every
+  persisted fact is **re-observed on load** and dropped if it no longer holds — memory saves the
+  *steps* of rediscovery without ever letting a stale claim leak in as trusted truth.
 
 ## Setup scripts
 
@@ -195,21 +219,67 @@ go run ./cmd/ada \
   -meta          # optional heuristic meta-controller
 ```
 
-The demo output shows the loop rejecting a lazy assertion, proving real work via an
-independent `fs` check (a strong fact), hitting an `env_deterministic` failure, and
-adapting to completion:
+The demo walks the full flexible-assertion lifecycle: it rejects a lazy assertion; tries a
+write whose **precondition** (the app dir exists) is unmet, so the command is *skipped*; makes
+the dir, proven via `fs`; writes the config and **corroborates** it with a postcondition that
+reads the contents back, so an `exit_code` success is recorded **strong**; then a doomed
+readiness probe fails twice, the runtime's **directive** forces a change of method, and it
+proves readiness an independent way:
 
 ```
-step=1 THINK id=lazy_probe   channel=stdout
-step=1 ANOMALY id=lazy_probe class=model_error expected="LAZY_ASSERTION: anchor your pattern (^...$)"
-step=2 THINK id=write_config channel=fs
-step=2 ACK   id=write_config strength=strong
-step=3 THINK id=read_marker  channel=exit_code
-step=3 ANOMALY id=read_marker class=env_deterministic expected="0" exit=1
-step=4 THINK id=create_marker channel=fs
-step=4 ACK   id=create_marker strength=strong
-step=4 OBJECTIVE_COMPLETE
+step=1 THINK id=lazy_probe    channel=stdout
+step=1 ANOMALY id=lazy_probe    class=model_error  expected="LAZY_ASSERTION: anchor your pattern (^...$)"
+step=2 THINK id=write_config  channel=exit_code
+step=2 ANOMALY id=write_config  class=precondition expected="PRECONDITION_UNMET: fs …/app|dir"   (command skipped)
+step=3 THINK id=make_appdir   channel=fs
+step=3 ACK   id=make_appdir   strength=strong
+step=4 THINK id=write_config  channel=exit_code
+step=4 ACK   id=write_config  strength=strong       (exit_code 0 corroborated by an fs content read-back)
+step=5 THINK id=prove_ready   channel=process
+step=5 ANOMALY id=prove_ready   class=transient attempts=1
+step=6 ANOMALY id=prove_ready   class=transient attempts=2   (directive: change the METHOD)
+step=7 THINK id=prove_ready   channel=fs
+step=7 ACK   id=prove_ready   strength=strong
+step=7 OBJECTIVE_COMPLETE
 ```
+
+## Flexible assertions & bounded recovery
+
+The model still proposes and the runtime still disposes — but a `Task` is now a richer
+hypothesis with a **prior → action → post** shape, and recovery is a finite, deterministic
+search rather than an open-ended retry. A single emission can read like this:
+
+```json
+{
+  "id": "set_prod_mode",
+  "command": "sed -i 's/^mode:.*/mode: prod/' /etc/app/config.yaml",
+  "mode": "blocking",
+  "timeout_sec": 10,
+  "preconditions":  [{ "type": "file", "pattern": "/etc/app/config.yaml|file", "channel": "fs" }],
+  "assertion":      { "type": "exit", "pattern": "0", "channel": "exit_code" },
+  "postconditions": [{ "type": "content", "pattern": "/etc/app/config.yaml|contains:^mode: prod$", "channel": "fs" }]
+}
+```
+
+- The **precondition** is checked first; if the config file isn't there, the `sed` never runs and
+  the model is told which assumption was wrong — a bad guess costs no action.
+- The **assertion** is the primary success check (here, the editor exited cleanly).
+- The **postcondition** reads the file back and confirms the new line is actually present. Because
+  an independent channel corroborated the change, the fact is recorded **strong** even though
+  `exit_code` alone is only moderately trustworthy. If the postcondition disagreed, the step would
+  fail — "it exited 0" is not "it worked".
+
+When an approach fails, the runtime counts how many times that *same* proposition has failed and
+hands the model an escalating **directive** to change method. The budget is bounded and nested:
+
+| Flag | Default | Bounds |
+|------|---------|--------|
+| `-max-attempts` | 3 | tries at one proposition within a strategy before a forced new strategy |
+| `-max-routes` | 3 | alternative strategies (Hard Context Forks) before the goal is abandoned `FAILED` |
+| `-memory` / `-memory-file` | on | persist & reuse re-validated durable facts across runs |
+
+So a genuinely stuck point gets at most `3 × 3 = 9` tries before ADA stops cleanly — it improvises
+only when a failure demands it, and never past the norm.
 
 ## Open-ended / complex tasks (planning mode)
 

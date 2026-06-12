@@ -65,12 +65,29 @@ type Orchestrator struct {
 	// a tight -goal-steps). 0 disables the cap. Reset on any valid emission.
 	MaxThinkFails int
 
+	// MaxAttemptsPerTask bounds how many times the SAME proposition (same target) may
+	// be attempted and fail WITHIN one strategy before the runtime forces a route
+	// change. It is the deterministic enforcement of "don't bang on the same door":
+	// each failure tells the model how many times this exact approach has failed, and
+	// the cap converts persistent failure into a Hard Context Fork — a fresh strategy
+	// — rather than an infinite re-send. 0 disables. (§8, bounded non-linear recovery.)
+	MaxAttemptsPerTask int
+
+	// MaxRoutes bounds the number of STRATEGIES (a route = the span between Hard
+	// Context Forks) a single goal may try before it is abandoned as FAILED. With
+	// MaxAttemptsPerTask this gives a finite, nested recovery budget — e.g. 3 routes ×
+	// 3 attempts = at most 9 tries at a stuck proposition — so the agent improvises
+	// only as much as the budget allows and never spins. 0 disables. (§8.)
+	MaxRoutes int
+
 	steps            int
 	thinkFails       int // consecutive invalid Task emissions (free retries)
 	consecutiveFails int
 	forking          bool            // next generation should sample at ForkTemp (§9.3)
 	completed        bool            // a Final task's assertion held — objective proven complete
 	seen             map[string]bool // verified propositions already established (dedup + stall)
+	attempts         map[string]int  // per-proposition failed attempts in the CURRENT route (reset by a fork)
+	forks            int             // routes taken: number of Hard Context Forks so far this run
 	dupSuccess       int             // consecutive successes that re-proved existing ground
 	stuckSteps       int             // steps since the last NEW verified fact (not reset by a fork)
 }
@@ -78,19 +95,32 @@ type Orchestrator struct {
 // NewOrchestrator returns an orchestrator with documented defaults.
 func NewOrchestrator(objective string, llm LLM, rt *Runtime) *Orchestrator {
 	return &Orchestrator{
-		Snapshot:      StateSnapshot{Objective: objective},
-		RT:            rt,
-		LLM:           llm,
-		MaxEntropy:    6,
-		MaxFacts:      15, // hard cap before folding (§7.2)
-		MaxSteps:      200,
-		MaxStuck:      6,   // abandon after this many steps with no new verified fact
-		MaxThinkFails: 4,   // consecutive invalid-JSON emissions before giving up (free retries)
-		StallBudget:   2,   // stop after this many consecutive no-progress successes
-		NormalTemp:    0.0, // determinism where we want reliability (§9.3)
-		ForkTemp:      0.8, // entropy where we want exploration (§9.3)
-		Log:           func(string, ...any) {},
-		seen:          make(map[string]bool),
+		Snapshot:           StateSnapshot{Objective: objective},
+		RT:                 rt,
+		LLM:                llm,
+		MaxEntropy:         6,
+		MaxFacts:           15, // hard cap before folding (§7.2)
+		MaxSteps:           200,
+		MaxStuck:           10,  // backstop: abandon after this many no-progress steps (kept above the 3×3 recovery budget so the route budget governs first)
+		MaxThinkFails:      4,   // consecutive invalid-JSON emissions before giving up (free retries)
+		MaxAttemptsPerTask: 3,   // same-proposition tries within a route before forcing a new strategy
+		MaxRoutes:          3,   // strategies (forks) before abandoning the goal — 3×3 = 9 tries max
+		StallBudget:        2,   // stop after this many consecutive no-progress successes
+		NormalTemp:         0.0, // determinism where we want reliability (§9.3)
+		ForkTemp:           0.8, // entropy where we want exploration (§9.3)
+		Log:                func(string, ...any) {},
+		seen:               make(map[string]bool),
+		attempts:           make(map[string]int),
+	}
+}
+
+// Seed pre-loads externally supplied verified facts (e.g. re-validated persistent
+// memory, §5.3) so the model treats them as already-known and does not waste steps
+// re-deriving them. Seeded propositions are marked established for stall/dedup.
+func (o *Orchestrator) Seed(facts []Fact) {
+	o.Snapshot.EstablishedFacts = append(o.Snapshot.EstablishedFacts, facts...)
+	for _, f := range facts {
+		o.seen[factSeedKey(f)] = true
 	}
 }
 
@@ -105,6 +135,14 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 	for o.steps < o.MaxSteps {
 		if err := ctx.Err(); err != nil {
 			return OutcomeExhausted
+		}
+
+		// Out of routes: the bounded set of alternative strategies is exhausted and
+		// none worked. Abandon as FAILED rather than keep improvising past the budget
+		// — "improvise only when needed, and only within a norm" (§8).
+		if o.MaxRoutes > 0 && o.forks >= o.MaxRoutes {
+			o.logf("step=%d OUT_OF_ROUTES: exhausted %d strategies without success; abandoning", o.steps, o.forks)
+			return OutcomeFailed
 		}
 
 		// The meta-controller manages strategy BEFORE the model thinks (§10).
@@ -207,6 +245,7 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 			return
 		}
 		o.seen[key] = true
+		delete(o.attempts, key) // this proposition is established; clear its failure budget
 		o.dupSuccess = 0
 		o.stuckSteps = 0 // genuine progress
 		o.addFact(Fact{
@@ -219,7 +258,21 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 		return
 	}
 
+	// Count how many times this exact proposition has now failed in the current
+	// route, and tell the model — explicitly — so it stops re-sending a dead approach
+	// and instead analyzes the autopsy and changes method ("pause, think, try a
+	// different approach"). This directive is runtime-authored, so it is trusted,
+	// plaintext guidance — never Base64-muzzled like the environment output.
+	key := factKey(task)
+	o.attempts[key]++
+	n := o.attempts[key]
+	res.Anomaly.Attempts = n
+	if n >= 2 {
+		res.Anomaly.Directive = fmt.Sprintf(
+			"This exact approach to the same target has failed %d× in a row. Do NOT resend it — read the autopsy and change the METHOD: a different command or channel, or first establish a missing precondition.", n)
+	}
 	o.Snapshot.Anomaly = res.Anomaly
+
 	// Decode the buried stderr/stdout so the human log says WHY it failed, not just
 	// that it did. (The Base64 in the payload is the model's injection defense; the
 	// operator log is allowed to read it.)
@@ -230,18 +283,26 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 	if errSnip != "" {
 		o.LastError = errSnip
 	}
-	o.logf("step=%d ANOMALY id=%s class=%s expected=%q exit=%d err=%q",
-		o.steps, res.Anomaly.FailedTaskID, res.Anomaly.FailureClass, res.Anomaly.Expected, res.Anomaly.ExitCode, errSnip)
-	o.afterFailure(res.Anomaly.FailureClass)
+	o.logf("step=%d ANOMALY id=%s class=%s attempts=%d expected=%q exit=%d err=%q",
+		o.steps, res.Anomaly.FailedTaskID, res.Anomaly.FailureClass, n, res.Anomaly.Expected, res.Anomaly.ExitCode, errSnip)
+	o.afterFailure(res.Anomaly.FailureClass, key)
 }
 
-// afterFailure advances entropy (weighted by failure class) and forks if the
-// local strategy is exhausted (§8.2, §8.3).
-func (o *Orchestrator) afterFailure(class string) {
+// afterFailure advances entropy (weighted by failure class) and forks when the
+// local strategy is exhausted — either because this one proposition has been
+// retried to its per-task cap (bang-the-same-door), or because accumulated
+// frustration crossed the entropy ceiling (§8.2, §8.3).
+func (o *Orchestrator) afterFailure(class, key string) {
 	o.consecutiveFails++
 	o.stuckSteps++ // a failure is not progress (and the fork won't reset this)
 	o.Snapshot.EntropyLevel += entropyWeight(class)
-	if o.Snapshot.EntropyLevel >= o.MaxEntropy {
+
+	attemptCapped := o.MaxAttemptsPerTask > 0 && o.attempts[key] >= o.MaxAttemptsPerTask
+	entropyCapped := o.Snapshot.EntropyLevel >= o.MaxEntropy
+	if attemptCapped || entropyCapped {
+		if attemptCapped {
+			o.logf("step=%d ATTEMPTS_EXHAUSTED key=%q n=%d -> forcing a new strategy", o.steps, key, o.attempts[key])
+		}
 		o.HardContextFork()
 	}
 }
@@ -366,13 +427,15 @@ func (o *Orchestrator) foldFacts() {
 // dead causal chain, and force a fresh attack vector from verified ground at a
 // raised temperature.
 func (o *Orchestrator) HardContextFork() {
-	o.logf("step=%d HARD_FORK entropy=%d", o.steps, o.Snapshot.EntropyLevel)
+	o.forks++ // a fork is a new strategy ("route"); MaxRoutes bounds how many we try
+	o.logf("step=%d HARD_FORK entropy=%d route=%d", o.steps, o.Snapshot.EntropyLevel, o.forks)
 	o.RT.KillDaemons()
 	o.Snapshot.EstablishedFacts = o.revalidateWeakFacts(o.Snapshot.EstablishedFacts)
 	o.Snapshot.Anomaly = nil
 	o.Snapshot.EntropyLevel = 0
 	o.consecutiveFails = 0
-	o.forking = true // §9.3: the next generation must perturb the sampler, or it isn't a fork
+	o.attempts = make(map[string]int) // new strategy ⇒ fresh per-proposition budgets
+	o.forking = true                  // §9.3: the next generation must perturb the sampler, or it isn't a fork
 }
 
 // revalidateWeakFacts re-checks weak (output-asserted) facts before they seed a
