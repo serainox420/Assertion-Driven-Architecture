@@ -23,6 +23,69 @@ ACT (Runtime) →  execute; evaluate assertion against observable state (NO LLM)
    └─ assertion FALSE → build AnomalyPayload, wake LLM, force correction
 ```
 
+## The `ada` runtime — one binary for the whole loop
+
+`ada` is the flagship runtime: a single static Go binary that does everything the
+`Makefile` and `scripts/` do, but faster and friendlier — think *ollama, but for
+ADA*. Run it with **no arguments** and it opens a full-screen, arrow-key-navigable
+**TUI**; pass a subcommand and it behaves as a rich CLI. Every knob is also an
+environment variable and a config-file key, so the same settings work in a shell,
+a Dockerfile, CI, or the TUI.
+
+```bash
+make ada          # build just bin/ada   (make build builds it + ada_agent)
+bin/ada           # no args → interactive TUI
+bin/ada --help    # the full command reference
+```
+
+The TUI is self-sufficient — **everything** can be done from it: run an objective
+and watch the loop stream live, drive a planning run, switch/pull/remove Ollama
+models, edit every setting (host, model, decoder params, budgets, system &
+planner prompts), and curate a **toolbox** of commands offered to the model. It
+renders colorized logs, syntax-highlighted JSON, and styled markdown throughout.
+
+```
+  ADA  ▸ Home                                    qwen2.5-coder:14b  ● online
+ ─────────────────────────────────────────────────────────────────────────
+ │ Run an objective       Drive one goal through the flat ADA loop
+   Planning run           Decompose an open-ended objective and execute
+   Models                 List, pull, switch and remove Ollama models
+   Settings               Host, model, decoder, budgets, prompts
+   Toolbox                Curate the commands offered to the model
+ ─────────────────────────────────────────────────────────────────────────
+  ↑/↓ move · enter select · q quit
+```
+
+### CLI commands
+
+| command | does |
+|---------|------|
+| `ada run "<objective>"` | drive one objective through the flat ADA loop (live, pretty) |
+| `ada plan "<objective>"` | planning mode: decompose → execute → re-plan |
+| `ada demo [--plan]` | offline demo, no model server needed |
+| `ada model list \| pull <tag> \| show <tag> \| rm <tag> \| use <tag>` | manage Ollama models |
+| `ada serve` | check / start the Ollama server |
+| `ada config list \| get <k> \| set <k> <v> \| edit \| reset` | manage every setting (persisted) |
+| `ada tools list \| add \| rm \| enable \| disable` | curate the model's toolbox |
+| `ada env [export]` | print (or `export`) the `ADA_*` knobs |
+| `ada doctor` | check toolchain, server reachability, model, checkout |
+| `ada build \| test \| fmt \| deps \| package \| bench \| sync` | the `scripts/` workflow |
+| `ada up \| shell \| stop \| start \| down \| rebuild \| refresh` | the Docker sandbox |
+
+Flags can appear before *or* after the objective; run `ada run -h` for the full
+list (`-model`, `-ollama`, `-plan`, `-max-steps`, `-goal-steps`, `-temperature`,
+`-meta`, `-memory`, `-color`, …). Precedence is **flags > env > config file >
+defaults**.
+
+### Config & environment
+
+State lives in `$ADA_CONFIG` (default `~/.config/ada/config.json`). Any field is
+overridable by an env var: `ADA_OLLAMA`/`OLLAMA_HOST`, `ADA_MODEL`,
+`ADA_MAX_STEPS`, `ADA_TEMPERATURE`, `ADA_NUM_CTX`, `ADA_COLOR`, … — `ada env`
+lists them all. **Tools** are operator-curated commands: enabled ones are injected
+into the worker's system prompt as a `TOOLBOX`, steering the model toward
+known-good commands and assertions without editing any code.
+
 ## Layout
 
 | Path | What it owns |
@@ -39,7 +102,8 @@ ACT (Runtime) →  execute; evaluate assertion against observable state (NO LLM)
 | `ada/prompt.go` | The system prompt + JSON schema (§9, §16) |
 | `ada/rl.go` | Meta-controller over a small discrete action space; reward shaping (§10) |
 | `ada/engine.go` | Supervises a llama.cpp/Ollama subprocess; readiness polling (§14) |
-| `cmd/ada/` | CLI + a self-contained offline demo |
+| `cmd/ada/` | the raw `ada_agent` orchestrator CLI + a self-contained offline demo |
+| `cmd/adax/` | the flagship `ada` binary: rich CLI + interactive TUI, config, tools, model management, workflow wrappers |
 
 ## What the prototype actually enforces
 
@@ -204,7 +268,8 @@ off — it is the only host path the sandbox can ever touch.
 
 ## Run it
 
-Requires Go 1.22+.
+Requires Go 1.24+ (the flagship `ada` TUI pulls in newer libraries; the `go` /
+`toolchain` directives fetch the right compiler automatically on Go 1.21+).
 
 ```bash
 # Offline demo — no model server needed. Walks the full failure/recovery narrative.
