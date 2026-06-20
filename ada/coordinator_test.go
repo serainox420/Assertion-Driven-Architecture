@@ -89,6 +89,60 @@ func TestCoordinatorStopsWhenStuck(t *testing.T) {
 	}
 }
 
+// TestCoordinatorRejectsDoneWithUnresolvedFailures: the planner must not be able to
+// declare victory on work the runtime could not achieve. A sub-goal the executor can
+// never satisfy is reported as failed; if the planner then claims done, the runtime
+// overrides it to STABLE (honest) rather than FINISHED (false). This locks in the
+// deterministic completion backstop — completion is earned against the record, not
+// the model's say-so.
+func TestCoordinatorRejectsDoneWithUnresolvedFailures(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "ok") // a sub-goal that genuinely succeeds (so the round makes progress)
+	round := 0
+	planFn := func(in PlanInput) (PlanDecision, error) {
+		round++
+		if round == 1 {
+			// First round: one achievable sub-goal (produces a fact so the round is
+			// not a no-op) plus one the executor can never satisfy.
+			return PlanDecision{Reason: "attempt", Subgoals: []string{
+				"make file ok at " + ok,
+				"do the impossible",
+			}}, nil
+		}
+		// Later rounds: the planner (wrongly) believes it is done. The runtime must
+		// refuse FINISHED because the previous round left an unresolved failure, and
+		// must surface that failure to the planner.
+		if len(in.Failed) == 0 {
+			t.Errorf("planner should be told about the failed sub-goal, got none")
+		}
+		return PlanDecision{Done: true, Reason: "i think we're done"}, nil
+	}
+	respond := func(s StateSnapshot) (Task, error) {
+		if strings.Contains(s.Objective, "file ok") {
+			return Task{
+				ID: "mk", Command: "touch " + ok, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+				Assertion: Assertion{Type: "fs", Pattern: ok, Channel: ChannelFS},
+			}, nil
+		}
+		return Task{
+			ID: "x", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "fs", Pattern: "/no/such/ada-backstop-xyz", Channel: ChannelFS},
+		}, nil
+	}
+	llm := &MockLLM{Respond: respond, PlanFn: planFn}
+	coord := NewCoordinator("objective the executor cannot fully meet", llm, llm, NewRuntime())
+	coord.GoalSteps = 3
+	coord.MaxRounds = 4
+
+	outcome, dec := coord.Run(context.Background())
+	if outcome == OutcomeFinished {
+		t.Fatalf("must NOT report FINISHED while a sub-goal is unresolved; got FINISHED (done=%v)", dec.Done)
+	}
+	if outcome != OutcomeStable {
+		t.Fatalf("expected STABLE backstop, got %s", outcome)
+	}
+}
+
 // TestCoordinatorRePlans: the planner adds a new sub-goal in a later round that it
 // could not know about initially — the flat-list plan extends as facts accumulate.
 func TestCoordinatorRePlans(t *testing.T) {

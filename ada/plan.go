@@ -15,12 +15,16 @@ type PlanDecision struct {
 }
 
 // PlanInput is everything the planner sees: the pinned objective, the verified
-// facts so far, and which sub-goals are already complete. No raw history (§7).
+// facts so far, which sub-goals were achieved, and which FAILED. No raw history
+// (§7). Completed and Failed are kept distinct on purpose: reporting a failed
+// sub-goal as "completed" lets the planner declare victory on work that never
+// landed, so the runtime tells the planner the truth about each outcome.
 type PlanInput struct {
 	Objective   string   `json:"objective"`
 	Environment []string `json:"environment,omitempty"` // durable host facts (§5.3)
 	Facts       []Fact   `json:"established_facts"`
 	Completed   []string `json:"completed_subgoals"`
+	Failed      []string `json:"failed_subgoals,omitempty"` // EXHAUSTED/FAILED — NOT achieved
 }
 
 // Planner turns a high-level objective + verified facts into the next concrete
