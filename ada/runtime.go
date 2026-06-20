@@ -246,7 +246,16 @@ func (r *Runtime) adjudicate(task Task, exitCode int, out, errb []byte) Executio
 	if passed {
 		return ExecutionResult{Passed: true, Output: outStr, Strength: factStrength(a)}
 	}
-	return r.failed(task, a.Pattern, out, errb, exitCode)
+	res := r.failed(task, a.Pattern, out, errb, exitCode)
+	// When an independent-state assertion (fs/process/service) fails despite a zero
+	// exit code, the environment's state is deterministically wrong relative to the
+	// model's assertion — not a transient hiccup that a retry will fix. Reclassify so
+	// entropy jumps fast (weight 3) and the model forks to a genuinely different
+	// strategy rather than re-issuing the same command three times in vain.
+	if exitCode == 0 && independentChannel(a.Channel) && res.Anomaly.FailureClass == ClassTransient {
+		res.Anomaly.FailureClass = ClassEnvDeterministic
+	}
+	return res
 }
 
 // regexpMatchLine matches an output stream in multiline mode so the model's

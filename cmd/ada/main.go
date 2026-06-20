@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	ada "github.com/serainox420/assertion-driven-architecture/ada"
 )
@@ -46,6 +47,13 @@ func main() {
 		memFile     = flag.String("memory-file", "", "persistent knowledge file (default: $XDG_STATE_HOME/ada/knowledge.json)")
 		verbose     = flag.Bool("v", true, "log one structured line per loop event")
 		colorMode   = flag.String("color", "auto", "colorize the live log: auto|always|never")
+
+		// Debug log mode: produces a per-run folder with structured logs of every
+		// step, task JSON, raw LLM response, anomalies, facts, and planner calls.
+		// Sub-settings are loaded from -debug-config (JSON); -debug-dir overrides Dir.
+		debugMode   = flag.Bool("debug", false, "enable debug log mode (records full run details to a per-run folder)")
+		debugDir    = flag.String("debug-dir", "", "override the debug log folder (default: $XDG_STATE_HOME/ada/debug)")
+		debugConfig = flag.String("debug-config", "", "JSON file with debug sub-settings (what to log); uses all-on defaults if absent")
 	)
 	flag.Parse()
 
@@ -61,6 +69,35 @@ func main() {
 		}
 	}
 	pnt := painter{color}
+
+	// Debug session: created here so it is available for both plan and flat modes.
+	// nil when -debug is not set — all DebugSession methods are nil-safe.
+	runStart := time.Now()
+	var dbg *ada.DebugSession
+	if *debugMode {
+		cfg := ada.DefaultDebugConfig()
+		cfg.Enabled = true
+		if *debugConfig != "" {
+			var err error
+			cfg, err = ada.LoadDebugConfig(*debugConfig)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ada: debug config error: %v\n", err)
+				os.Exit(2)
+			}
+			cfg.Enabled = true
+		}
+		if *debugDir != "" {
+			cfg.Dir = *debugDir
+		}
+		var err error
+		dbg, err = ada.NewDebugSession(cfg, runStart)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ada: could not create debug session: %v\n", err)
+			os.Exit(2)
+		}
+		defer dbg.Close()
+		fmt.Fprintf(os.Stderr, "ada debug: run dir %s\n", dbg.Dir())
+	}
 
 	// Ctrl-C produces a clean, observable shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -93,6 +130,7 @@ func main() {
 	// them until the planner judges the objective satisfied.
 	if *plan {
 		llm := ada.NewOllamaLLM(*ollamaURL, *model)
+		llm.DebugHook = dbg.CaptureRaw
 		rt := ada.NewRuntime()
 		coord := ada.NewCoordinator(*objective, llm, llm, rt)
 		coord.MaxRounds = *maxRounds
@@ -104,16 +142,37 @@ func main() {
 		coord.StallBudget = *stall
 		coord.MaxFacts = *maxFacts
 		coord.Log = logf
+		coord.Debug = dbg
 		coord.Seed(seed)
+
+		dbg.WriteMeta(map[string]any{
+			"mode":           "plan",
+			"objective":      *objective,
+			"model":          *model,
+			"ollama_url":     *ollamaURL,
+			"max_rounds":     *maxRounds,
+			"goal_steps":     *goalSteps,
+			"max_entropy":    *maxEntropy,
+			"max_facts":      *maxFacts,
+			"max_stuck":      *maxStuck,
+			"max_attempts":   *maxAttempts,
+			"max_routes":     *maxRoutes,
+			"stall":          *stall,
+			"use_memory":     *useMemory,
+			"memory_file":    *memFile,
+			"environment":    ada.HostFacts(),
+		})
 
 		outcome, dec := coord.Run(ctx)
 		mem.Save(coord.Facts())
+		dbg.WriteSummary(outcome, dec.Reason, coord.LastError(), coord.Facts(), 0, 0)
 		printSummary(pnt, "PLAN RUN COMPLETE", outcome, dec.Reason,
 			ada.StateSnapshot{Objective: *objective, EstablishedFacts: coord.Facts()}, coord.LastError())
 		return
 	}
 
 	llm := ada.NewOllamaLLM(*ollamaURL, *model)
+	llm.DebugHook = dbg.CaptureRaw
 	rt := ada.NewRuntime()
 	orch := ada.NewOrchestrator(*objective, llm, rt)
 	orch.Snapshot.Environment = ada.HostFacts() // tell the agent what host it's on (§5.3)
@@ -125,13 +184,33 @@ func main() {
 	orch.MaxRoutes = *maxRoutes
 	orch.StallBudget = *stall
 	orch.Log = logf
+	orch.Debug = dbg
 	orch.Seed(seed)
 	if *useMeta {
 		orch.Meta = ada.HeuristicController{MaxEntropy: *maxEntropy}
 	}
 
+	dbg.WriteMeta(map[string]any{
+		"mode":           "flat",
+		"objective":      *objective,
+		"model":          *model,
+		"ollama_url":     *ollamaURL,
+		"max_steps":      *maxSteps,
+		"max_entropy":    *maxEntropy,
+		"max_facts":      *maxFacts,
+		"max_stuck":      *maxStuck,
+		"max_attempts":   *maxAttempts,
+		"max_routes":     *maxRoutes,
+		"stall":          *stall,
+		"use_meta":       *useMeta,
+		"use_memory":     *useMemory,
+		"memory_file":    *memFile,
+		"environment":    ada.HostFacts(),
+	})
+
 	outcome := orch.Run(ctx)
 	mem.Save(orch.Snapshot.EstablishedFacts)
+	dbg.WriteSummary(outcome, "", orch.LastError, orch.Snapshot.EstablishedFacts, orch.Steps(), orch.Forks())
 	printSummary(pnt, "RUN COMPLETE", outcome, "", orch.Snapshot, orch.LastError)
 	switch outcome {
 	case ada.OutcomeStable:

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Outcome is the terminal state of a run — always explicit, never an ambiguous
@@ -46,6 +47,10 @@ type Orchestrator struct {
 
 	// Log receives one structured line per significant event for observability.
 	Log func(format string, args ...any)
+
+	// Debug, when non-nil, records full step details (task JSON, raw LLM response,
+	// stdout/stderr, timing) to a per-run folder for post-mortem analysis.
+	Debug *DebugSession
 
 	// LastError holds a decoded snippet of the most recent failing command's
 	// stderr (or stdout) — the "why did it fail" otherwise buried in the Base64
@@ -114,6 +119,12 @@ func NewOrchestrator(objective string, llm LLM, rt *Runtime) *Orchestrator {
 	}
 }
 
+// Steps returns the number of steps taken in the last Run.
+func (o *Orchestrator) Steps() int { return o.steps }
+
+// Forks returns the number of Hard Context Forks taken in the last Run.
+func (o *Orchestrator) Forks() int { return o.forks }
+
 // Seed pre-loads externally supplied verified facts (e.g. re-validated persistent
 // memory, §5.3) so the model treats them as already-known and does not waste steps
 // re-deriving them. Seeded propositions are marked established for stall/dedup.
@@ -153,7 +164,9 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 			temp = o.ForkTemp
 		}
 
+		thinkStart := time.Now()
 		task, err := o.LLM.GenerateTask(ctx, o.Snapshot, temp)
+		thinkMs := time.Since(thinkStart).Milliseconds()
 		if err != nil {
 			// A parse / contract violation is the model's own fixable mistake (§9.2).
 			// Feed it back as an anomaly and RETRY for free — do NOT spend a step, or a
@@ -181,8 +194,16 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 		o.forking = false
 		o.logf("step=%d THINK id=%s mode=%s channel=%s", o.steps, task.ID, task.Mode, task.Assertion.Channel)
 
+		execStart := time.Now()
 		res := o.RT.Execute(task)
+		execMs := time.Since(execStart).Milliseconds()
 		o.applyResult(task, res)
+		if o.Debug != nil {
+			o.Debug.LogStep(o.steps, o.Snapshot.Objective, task, thinkMs, res, execMs, o.Snapshot.EntropyLevel, o.forks)
+			if !res.Passed && res.Anomaly != nil {
+				o.Debug.LogAnomaly(o.steps, o.Snapshot.Objective, res.Anomaly)
+			}
+		}
 
 		// Async job completions fold straight back in as strong facts (§4.1).
 		for _, f := range o.RT.PollJobs() {
@@ -382,6 +403,7 @@ func shorten(s string, n int) string {
 // addFact appends a verified fact and folds the fact base if it overflows (§7.2).
 func (o *Orchestrator) addFact(f Fact) {
 	o.Snapshot.EstablishedFacts = append(o.Snapshot.EstablishedFacts, f)
+	o.Debug.LogFact(o.steps, o.Snapshot.Objective, f)
 	if len(o.Snapshot.EstablishedFacts) > o.MaxFacts {
 		o.foldFacts()
 	}
