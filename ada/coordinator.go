@@ -34,7 +34,8 @@ type Coordinator struct {
 	Log                func(format string, args ...any)
 
 	facts     []Fact
-	completed []string
+	completed []string // sub-goals achieved (FINISHED/STABLE)
+	failed    []string // sub-goals the runtime could NOT achieve (EXHAUSTED/FAILED)
 	lastError string
 }
 
@@ -85,13 +86,14 @@ func (c *Coordinator) Facts() []Fact { return c.facts }
 // the planner's final decision (its reason explains why it stopped).
 func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 	var last PlanDecision
+	var roundFailures []string // sub-goals the most recent round could NOT achieve
 	for round := 1; round <= c.MaxRounds; round++ {
 		if ctx.Err() != nil {
 			return OutcomeExhausted, last
 		}
 
 		dec, err := c.Planner.Plan(ctx,
-			PlanInput{Objective: c.Objective, Environment: c.Environment, Facts: c.facts, Completed: c.completed}, c.PlanTemp)
+			PlanInput{Objective: c.Objective, Environment: c.Environment, Facts: c.facts, Completed: c.completed, Failed: c.failed}, c.PlanTemp)
 		if err != nil {
 			// A planner contract violation is a survivable anomaly, not a crash.
 			c.logf("round=%d PLAN_FAILED err=%v", round, err)
@@ -100,9 +102,19 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 		last = dec
 		c.logf("round=%d PLAN done=%v subgoals=%d reason=%q", round, dec.Done, len(dec.Subgoals), dec.Reason)
 
-		// "Until goal satisfied": the planner is the authority on completion, judged
-		// against verified facts (never the executor's say-so).
+		// "Until goal satisfied": the planner judges completion against verified
+		// facts. But the planner is a stochastic model — it does not get to declare
+		// victory while the deterministic runtime recorded sub-goals it could NOT
+		// achieve. Completion must be earned against the record, not the model's hope
+		// (§ ADA philosophy: relocate success-evaluation to the runtime). An honest
+		// STABLE with accumulated facts beats a false FINISHED. A genuinely-already-
+		// satisfied objective on a fresh start has no prior failures, so it still
+		// returns FINISHED.
 		if dec.Done {
+			if len(roundFailures) > 0 {
+				c.logf("round=%d PLAN claimed done but %d sub-goal(s) unresolved (EXHAUSTED/FAILED) last round; NOT finished -> STABLE", round, len(roundFailures))
+				return OutcomeStable, dec
+			}
 			return OutcomeFinished, dec
 		}
 		if len(dec.Subgoals) == 0 {
@@ -111,13 +123,23 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 		}
 
 		startFacts := len(c.facts)
+		roundFailures = nil
 		for i, sg := range dec.Subgoals {
 			if ctx.Err() != nil {
 				return OutcomeExhausted, last
 			}
 			c.logf("round=%d goal=%d/%d START %q", round, i+1, len(dec.Subgoals), sg)
 			outcome := c.runSubgoal(ctx, sg)
-			c.completed = append(c.completed, sg)
+			// Tell the planner the TRUTH about each outcome: only FINISHED/STABLE
+			// (achieved or already held) count as completed; EXHAUSTED/FAILED are
+			// recorded as failures so the planner cannot mistake stuck work for done.
+			switch outcome {
+			case OutcomeExhausted, OutcomeFailed:
+				c.failed = append(c.failed, sg)
+				roundFailures = append(roundFailures, sg)
+			default:
+				c.completed = append(c.completed, sg)
+			}
 			c.logf("round=%d goal=%d %s %q", round, i+1, outcome, sg)
 		}
 

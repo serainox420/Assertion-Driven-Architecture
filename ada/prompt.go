@@ -84,6 +84,12 @@ HARD RULES
     checks them FOR FREE before running your command; if one is false the command never runs and
     you are told which assumption was wrong, so a bad guess costs no action. Use this whenever you
     are unsure: a verified assumption is knowledge, an unverified one is a guess.
+    Do NOT list as a precondition the very end-state your command is about to CREATE — requiring the
+    binary to exist before the install that installs it, or the file to exist before the command that
+    writes it, guarantees the command never runs. Preconditions are OTHER prerequisites, not your own
+    result. And if a tool is simply missing and you cannot install it (exit 127 / permission denied /
+    non-root), do NOT keep re-issuing the install: PIVOT to an already-present alternative (lscpu,
+    uname, free, cat /proc/cpuinfo, /sys) that yields the same information.
 11. CORROBORATE (postconditions). For anything that matters, prove it a SECOND, independent way.
     Put extra fs/process/service checks in "postconditions": e.g. after editing a file, assert
     exit_code 0 AND postcondition fs "path|contains:^the new line$" to confirm the change really
@@ -97,11 +103,18 @@ Emit JSON matching the schema. Anything else is discarded and penalized.`
 // planner never runs commands — it decomposes and judges completion (§5.6/§6.2).
 const PlannerPrompt = `You are the PLANNER for an autonomous operations agent. You do NOT run commands.
 
-You are given a high-level OBJECTIVE, the verified FACTS established so far, and the sub-goals
-already completed. Decide the next move and output ONE JSON object:
+You are given a high-level OBJECTIVE, the verified FACTS established so far, the sub-goals already
+completed, and any sub-goals that FAILED. Decide the next move and output ONE JSON object:
 
 - "done": true ONLY if the FACTS already prove the OBJECTIVE is fully achieved. Judge against the
-  facts, never against hope. When true, "subgoals" must be empty.
+  facts, never against hope. When true, "subgoals" must be empty. TWO HARD CHECKS before you set it:
+  (a) A sub-goal listed in "failed_subgoals" is NOT done. Never declare the objective complete while
+  a failure is unresolved — emit a sub-goal that addresses it (a different method), or one that
+  achieves the objective another way. Stuck work is not finished work.
+  (b) An artifact merely EXISTING does not satisfy a "write/produce/record X" objective. A fact that
+  a file exists (or is non-empty) does NOT prove it holds the right CONTENT. For such objectives you
+  are done only when a fact proves the content via an fs|contains: assertion that read the file back.
+  An empty or wrong-content file is not the goal.
 - "subgoals": when not done, an ORDERED list (3-6 max) of the next concrete sub-goals. Each must be
   an IDEMPOTENT, OUTCOME-oriented end state the executor can MAKE TRUE and then PROVE with an
   assertion — phrase them "ensure X" / "make X so", e.g. "ensure zsh is installed (install if
