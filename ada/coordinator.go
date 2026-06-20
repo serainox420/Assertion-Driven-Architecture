@@ -1,6 +1,9 @@
 package ada
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Coordinator drives OPEN-ENDED objectives that have no single obvious end. It
 // asks a Planner to break the objective into a flat, re-plannable list of
@@ -31,7 +34,8 @@ type Coordinator struct {
 	ForkTemp           float64  // executor temp on a fork (§9.3)
 	PlanTemp           float64  // planner sampling temperature (a little creativity helps decomposition)
 	Environment        []string // durable host facts shown to planner + executor (§5.3)
-	Log                func(format string, args ...any)
+	Log   func(format string, args ...any)
+	Debug *DebugSession // when non-nil, writes planner calls + per-step details
 
 	facts     []Fact
 	completed []string // sub-goals achieved (FINISHED/STABLE)
@@ -92,8 +96,10 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 			return OutcomeExhausted, last
 		}
 
-		dec, err := c.Planner.Plan(ctx,
-			PlanInput{Objective: c.Objective, Environment: c.Environment, Facts: c.facts, Completed: c.completed, Failed: c.failed}, c.PlanTemp)
+		in := PlanInput{Objective: c.Objective, Environment: c.Environment, Facts: c.facts, Completed: c.completed, Failed: c.failed}
+		planStart := time.Now()
+		dec, err := c.Planner.Plan(ctx, in, c.PlanTemp)
+		planMs := time.Since(planStart).Milliseconds()
 		if err != nil {
 			// A planner contract violation is a survivable anomaly, not a crash.
 			c.logf("round=%d PLAN_FAILED err=%v", round, err)
@@ -101,6 +107,7 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 		}
 		last = dec
 		c.logf("round=%d PLAN done=%v subgoals=%d reason=%q", round, dec.Done, len(dec.Subgoals), dec.Reason)
+		c.Debug.LogPlanner(round, in, dec, planMs)
 
 		// "Until goal satisfied": the planner judges completion against verified
 		// facts. But the planner is a stochastic model — it does not get to declare
@@ -169,6 +176,7 @@ func (c *Coordinator) runSubgoal(ctx context.Context, subgoal string) Outcome {
 	o.NormalTemp = c.NormalTemp
 	o.ForkTemp = c.ForkTemp
 	o.Log = c.Log
+	o.Debug = c.Debug
 	o.Snapshot.MainObjective = c.Objective
 	o.Snapshot.Environment = c.Environment
 	o.Snapshot.EstablishedFacts = append([]Fact(nil), c.facts...)

@@ -24,7 +24,8 @@ func alwaysFailsLLM(seen *[]*AnomalyPayload) *MockLLM {
 // route change (Hard Context Fork) rather than letting the model re-send forever.
 func TestAttemptBudgetForcesFork(t *testing.T) {
 	orch := NewOrchestrator("impossible", alwaysFailsLLM(nil), NewRuntime())
-	orch.MaxStuck = 0 // isolate the attempt/route budget from the coarse stuck guard
+	orch.MaxStuck = 0    // isolate the attempt/route budget from the coarse stuck guard
+	orch.MaxEntropy = 100 // prevent entropy from forking before the attempt budget triggers
 	orch.MaxAttemptsPerTask = 3
 	orch.MaxRoutes = 1 // one fork is enough to exhaust the routes
 
@@ -59,10 +60,11 @@ func TestRouteBudgetBoundsTotalAttempts(t *testing.T) {
 	}
 }
 
-// With STOCK defaults (no per-test tuning), the nested recovery budget — not the
-// coarse stuck guard — must govern a "banging the same door" goal: it abandons as
-// FAILED at exactly MaxRoutes × MaxAttemptsPerTask tries. This pins MaxStuck above
-// the budget so a future tweak can't silently shadow the principled terminal.
+// With STOCK defaults (no per-test tuning), the bounded recovery budget — not the
+// coarse stuck guard — must govern a "banging the same door" goal and abandon as
+// FAILED. A FS assertion failing with exit 0 is classified env_deterministic
+// (weight 3). With MaxEntropy=6 and weight=3, each route forks after 2 steps
+// (2×3=6 ≥ MaxEntropy). Total: MaxRoutes(3) × 2 = 6 steps.
 func TestDefaultBudgetGovernsSameDoor(t *testing.T) {
 	orch := NewOrchestrator("impossible", alwaysFailsLLM(nil), NewRuntime())
 	// defaults only: MaxStuck=10, MaxAttemptsPerTask=3, MaxRoutes=3, MaxEntropy=6
@@ -70,8 +72,11 @@ func TestDefaultBudgetGovernsSameDoor(t *testing.T) {
 	if got := orch.Run(context.Background()); got != OutcomeFailed {
 		t.Fatalf("the route budget should govern and abandon as FAILED, got %s", got)
 	}
-	if want := orch.MaxRoutes * orch.MaxAttemptsPerTask; orch.steps != want {
-		t.Errorf("expected the 3×3 budget (%d tries) to govern under defaults, took %d", want, orch.steps)
+	// FS-with-exit-0 → ClassEnvDeterministic (weight 3); entropy cap=6 → fork every 2 steps.
+	stepsPerRoute := orch.MaxEntropy / entropyWeight(ClassEnvDeterministic)
+	if want := orch.MaxRoutes * stepsPerRoute; orch.steps != want {
+		t.Errorf("expected entropy-governed %d×%d budget (%d tries) under defaults, took %d",
+			orch.MaxRoutes, stepsPerRoute, want, orch.steps)
 	}
 }
 
@@ -120,6 +125,7 @@ func TestSuccessClearsAttemptBudget(t *testing.T) {
 	}}
 	orch := NewOrchestrator("x", llm, NewRuntime())
 	orch.MaxStuck = 0
+	orch.MaxEntropy = 100 // prevent entropy from forking before the attempt budget triggers
 	if got := orch.Run(context.Background()); got != OutcomeFinished {
 		t.Fatalf("two early failures then a real success should FINISH, got %s", got)
 	}

@@ -42,6 +42,11 @@ type OllamaLLM struct {
 	Model   string // e.g. qwen2.5-coder:14b
 	NumCtx  int    // compressed context fits comfortably (§9.1)
 	HTTP    *http.Client
+
+	// DebugHook, when set, is called with the raw response string after every
+	// completion — before JSON parsing — so a DebugSession can capture it for
+	// tasks.jsonl. Wire via session.CaptureRaw. Nil is a no-op.
+	DebugHook func(raw string)
 }
 
 // NewOllamaLLM returns a client with sensible defaults.
@@ -95,6 +100,9 @@ func (o *OllamaLLM) complete(ctx context.Context, system, prompt string, format 
 	}
 	if out.Error != "" {
 		return "", fmt.Errorf("ollama error: %s", out.Error)
+	}
+	if o.DebugHook != nil {
+		o.DebugHook(out.Response)
 	}
 	return out.Response, nil
 }
