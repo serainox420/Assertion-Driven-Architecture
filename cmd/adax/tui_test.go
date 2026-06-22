@@ -68,21 +68,45 @@ func newTestModel(t *testing.T) *tuiModel {
 	return drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 }
 
+// selectSettingsItem navigates to Settings then selects the sub-menu item with
+// the given id.
+func selectSettingsItem(t *testing.T, m *tuiModel, id string) *tuiModel {
+	t.Helper()
+	m = selectMenu(t, m, "settings")
+	for i, it := range m.settingsMenu.Items() {
+		if mi, ok := it.(menuItem); ok && mi.id == id {
+			m.settingsMenu.Select(i)
+			return drive(t, m, key("enter"))
+		}
+	}
+	t.Fatalf("settings menu item %q not found", id)
+	return m
+}
+
 func TestTUINavigatesAllScreens(t *testing.T) {
-	for _, id := range []string{"settings", "tools", "env", "help", "models"} {
+	// Top-level menu items that return directly to scMenu on esc.
+	for _, id := range []string{"settings", "tools", "help"} {
 		m := newTestModel(t)
 		m = selectMenu(t, m, id)
-		// esc returns to the menu from each screen.
 		m = drive(t, m, key("esc"))
 		if m.screen != scMenu {
 			t.Fatalf("after esc from %q, screen=%v want menu", id, m.screen)
+		}
+	}
+	// Settings sub-items: esc from env/models returns to scSettingsMenu.
+	for _, id := range []string{"env", "models"} {
+		m := newTestModel(t)
+		m = selectSettingsItem(t, m, id)
+		m = drive(t, m, key("esc"))
+		if m.screen != scSettingsMenu {
+			t.Fatalf("after esc from settings/%q, screen=%v want scSettingsMenu", id, m.screen)
 		}
 	}
 }
 
 func TestTUISettingsEdit(t *testing.T) {
 	m := newTestModel(t)
-	m = selectMenu(t, m, "settings")
+	m = selectSettingsItem(t, m, "general")
 	// Select the "model" row, edit it, type a value, save.
 	for i, it := range m.settings.Items() {
 		if kv, ok := it.(kvItem); ok && kv.key == "model" {
@@ -133,8 +157,13 @@ func TestTUIToolFormAddsTool(t *testing.T) {
 func TestTUIRunInputValidation(t *testing.T) {
 	m := newTestModel(t)
 	m = selectMenu(t, m, "run")
-	if m.screen != scRun || m.runState != rsInput {
-		t.Fatalf("expected run input screen, got screen=%v state=%v", m.screen, m.runState)
+	if m.screen != scRun || m.runState != rsTypeSelect {
+		t.Fatalf("expected run type-select screen, got screen=%v state=%v", m.screen, m.runState)
+	}
+	// Select "flat" run type to reach objective input.
+	m = drive(t, m, key("enter"))
+	if m.runState != rsInput {
+		t.Fatalf("after selecting run type, expected rsInput, got state=%v", m.runState)
 	}
 	// Enter with an empty objective must not start a run (stays in input).
 	m = drive(t, m, key("enter"))

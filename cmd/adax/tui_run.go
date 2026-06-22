@@ -8,9 +8,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// startRun spins up a background goroutine that drives the objective (or a demo)
-// and streams every structured event back over m.events as a tea.Msg, so the loop
-// renders live. The returned Cmd kicks the spinner and the first channel read.
+// startRun spins up a background goroutine that drives the objective and streams
+// every structured event back over m.events as a tea.Msg, so the loop renders live.
 func (m *tuiModel) startRun(objective string) tea.Cmd {
 	m.runState = rsActive
 	m.runResult = nil
@@ -27,15 +26,7 @@ func (m *tuiModel) startRun(objective string) tea.Cmd {
 		logf := func(format string, args ...any) {
 			ch <- logLineMsg(renderEvent(fmt.Sprintf(format, args...)))
 		}
-		var res RunResult
-		switch mode {
-		case "demo":
-			res = runDemo(ctx, logf)
-		case "plandemo":
-			res = runPlanDemo(ctx, logf)
-		default:
-			res = executeRun(ctx, cfg, client, objective, mode == "plan", logf)
-		}
+		res := executeRun(ctx, cfg, client, objective, mode == "plan", logf)
 		ch <- runDoneMsg(res)
 	}()
 
@@ -59,13 +50,8 @@ func (m *tuiModel) updateRun(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.runLog = append(m.runLog, theme.Bad.Render("error: ")+res.Err.Error())
 		} else {
 			label := "RUN COMPLETE"
-			switch m.runMode {
-			case "plan":
+			if m.runMode == "plan" {
 				label = "PLAN RUN COMPLETE"
-			case "demo":
-				label = "DEMO COMPLETE"
-			case "plandemo":
-				label = "PLAN DEMO COMPLETE"
 			}
 			m.runLog = append(m.runLog, "", renderSummary(label, res.Outcome, res.PlanReason, res.Snapshot, res.LastError))
 		}
@@ -75,10 +61,27 @@ func (m *tuiModel) updateRun(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch m.runState {
-		case rsInput:
+		case rsTypeSelect:
 			switch msg.String() {
 			case "esc":
 				m.screen = scMenu
+				return m, nil
+			case "enter":
+				if it, ok := m.runTypeList.SelectedItem().(menuItem); ok {
+					m.runMode = it.id
+					m.runState = rsInput
+					m.runInput.SetValue("")
+					return m, m.runInput.Focus()
+				}
+			}
+			var cmd tea.Cmd
+			m.runTypeList, cmd = m.runTypeList.Update(msg)
+			return m, cmd
+
+		case rsInput:
+			switch msg.String() {
+			case "esc":
+				m.runState = rsTypeSelect
 				return m, nil
 			case "enter":
 				obj := strings.TrimSpace(m.runInput.Value())
@@ -109,12 +112,8 @@ func (m *tuiModel) updateRun(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.screen = scMenu
 				return m, nil
 			case "n":
-				if m.runMode == "demo" || m.runMode == "plandemo" {
-					return m, m.startRun("")
-				}
-				m.runState = rsInput
-				m.runInput.SetValue("")
-				return m, m.runInput.Focus()
+				m.runState = rsTypeSelect
+				return m, nil
 			}
 			var cmd tea.Cmd
 			m.runVP, cmd = m.runVP.Update(msg)
@@ -126,6 +125,9 @@ func (m *tuiModel) updateRun(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) viewRun() (string, string) {
 	switch m.runState {
+	case rsTypeSelect:
+		return m.runTypeList.View(), "↑/↓ move · enter select · esc back"
+
 	case rsInput:
 		mode := "flat loop"
 		if m.runMode == "plan" {

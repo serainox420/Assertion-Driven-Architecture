@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	ada "github.com/serainox420/assertion-driven-architecture/ada"
 )
@@ -35,6 +36,14 @@ func applyOrchestratorBudgets(o *ada.Orchestrator, cfg *Config) {
 // coordinator, persists durable facts, and returns a uniform RunResult. logf
 // receives the structured event stream (already pretty-rendered by the caller).
 func executeRun(ctx context.Context, cfg *Config, client *Client, objective string, planMode bool, logf func(string, ...any)) RunResult {
+	// Debug session: nil when disabled (all methods are nil-safe).
+	dbg, _ := ada.NewDebugSession(cfg.ToDebugConfig(), time.Now())
+	defer dbg.Close()
+	if dbg != nil {
+		logf("debug: run dir %s", dbg.Dir())
+		client.DebugHook = dbg.CaptureRaw
+	}
+
 	// Re-validated persistent memory (§5.3): learn durable facts once, reuse next run.
 	mem := ada.OpenMemory(cfg.MemoryPath(), cfg.Memory)
 	if mem != nil {
@@ -57,10 +66,18 @@ func executeRun(ctx context.Context, cfg *Config, client *Client, objective stri
 		coord.ForkTemp = cfg.ForkTemp
 		coord.PlanTemp = cfg.PlanTemp
 		coord.Log = logf
+		coord.Debug = dbg
 		coord.Seed(seed)
+
+		dbg.WriteMeta(map[string]any{
+			"mode": "plan", "objective": objective, "model": cfg.Model,
+			"ollama_url": cfg.OllamaHost, "max_rounds": cfg.MaxRounds,
+			"goal_steps": cfg.GoalSteps, "max_entropy": cfg.MaxEntropy,
+		})
 
 		outcome, dec := coord.Run(ctx)
 		mem.Save(coord.Facts())
+		dbg.WriteSummary(outcome, dec.Reason, coord.LastError(), coord.Facts(), 0, 0)
 		return RunResult{
 			Outcome:    outcome,
 			PlanReason: dec.Reason,
@@ -74,13 +91,21 @@ func executeRun(ctx context.Context, cfg *Config, client *Client, objective stri
 	orch.Snapshot.Environment = ada.HostFacts()
 	applyOrchestratorBudgets(orch, cfg)
 	orch.Log = logf
+	orch.Debug = dbg
 	orch.Seed(seed)
 	if cfg.Meta {
 		orch.Meta = ada.HeuristicController{MaxEntropy: cfg.MaxEntropy}
 	}
 
+	dbg.WriteMeta(map[string]any{
+		"mode": "flat", "objective": objective, "model": cfg.Model,
+		"ollama_url": cfg.OllamaHost, "max_steps": cfg.MaxSteps,
+		"max_entropy": cfg.MaxEntropy,
+	})
+
 	outcome := orch.Run(ctx)
 	mem.Save(orch.Snapshot.EstablishedFacts)
+	dbg.WriteSummary(outcome, "", orch.LastError, orch.Snapshot.EstablishedFacts, orch.Steps(), orch.Forks())
 	return RunResult{
 		Outcome:   outcome,
 		Snapshot:  orch.Snapshot,
