@@ -60,7 +60,7 @@ func (m *tuiModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok {
 		switch k.String() {
 		case "esc":
-			m.screen = scMenu
+			m.screen = scSettingsMenu
 			return m, nil
 		case "enter":
 			if it, ok := m.settings.SelectedItem().(kvItem); ok {
@@ -84,6 +84,89 @@ func (m *tuiModel) viewSettings() (string, string) {
 		return title + "\n\n" + box + "\n\n" + hint, "enter save · esc cancel"
 	}
 	return m.settings.View(), "↑/↓ move · enter edit · esc back"
+}
+
+func (m *tuiModel) rebuildDebugSettings() {
+	var items []list.Item
+	for _, f := range m.cfg.DebugFields() {
+		items = append(items, kvItem{f.Key, f.Value, f.Desc})
+	}
+	m.debugSettings.SetItems(items)
+}
+
+func (m *tuiModel) updateSettingsMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "esc":
+			m.screen = scMenu
+			return m, nil
+		case "enter":
+			if it, ok := m.settingsMenu.SelectedItem().(menuItem); ok {
+				return m.dispatchSettingsMenu(it.id)
+			}
+		}
+	}
+	var cmd tea.Cmd
+	m.settingsMenu, cmd = m.settingsMenu.Update(msg)
+	return m, cmd
+}
+
+func (m *tuiModel) viewSettingsMenu() (string, string) {
+	return m.settingsMenu.View(), "↑/↓ move · enter select · esc back"
+}
+
+func (m *tuiModel) updateDebugSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.editing {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "esc":
+				m.editing = false
+				return m, nil
+			case "enter":
+				err := m.cfg.SetField(m.editKey, strings.TrimSpace(m.editInput.Value()))
+				if err != nil {
+					return m, m.setFlash(theme.Bad.Render("✗ " + err.Error()))
+				}
+				if serr := m.cfg.Save(); serr != nil {
+					return m, m.setFlash(theme.Bad.Render("✗ " + serr.Error()))
+				}
+				m.editing = false
+				m.rebuildDebugSettings()
+				return m, m.setFlash(theme.OK.Render("✓ saved " + m.editKey))
+			}
+		}
+		var cmd tea.Cmd
+		m.editInput, cmd = m.editInput.Update(msg)
+		return m, cmd
+	}
+
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "esc":
+			m.screen = scSettingsMenu
+			return m, nil
+		case "enter":
+			if it, ok := m.debugSettings.SelectedItem().(kvItem); ok {
+				m.editing, m.editKey = true, it.key
+				m.editInput.SetValue(it.val)
+				m.editInput.CursorEnd()
+				return m, m.editInput.Focus()
+			}
+		}
+	}
+	var cmd tea.Cmd
+	m.debugSettings, cmd = m.debugSettings.Update(msg)
+	return m, cmd
+}
+
+func (m *tuiModel) viewDebugSettings() (string, string) {
+	if m.editing {
+		title := theme.Title.Render("Edit ") + theme.Key.Render(m.editKey)
+		box := theme.FocusBox.Width(maxi(m.width-4, 20)).Render(m.editInput.View())
+		hint := theme.Dim.Render("Booleans: true/false. Leave debug_dir blank to use the default.")
+		return title + "\n\n" + box + "\n\n" + hint, "enter save · esc cancel"
+	}
+	return m.debugSettings.View(), "↑/↓ move · enter edit · esc back"
 }
 
 // ── models ────────────────────────────────────────────────────────────────────
@@ -199,7 +282,7 @@ func (m *tuiModel) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch k.String() {
 		case "esc":
-			m.screen = scMenu
+			m.screen = m.prevScreen
 			return m, nil
 		case "p":
 			m.addingPull = true

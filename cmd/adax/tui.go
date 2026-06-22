@@ -33,17 +33,26 @@ type screen int
 const (
 	scMenu screen = iota
 	scRun
-	scSettings
-	scModels
-	scTools
-	scEnv
+	scSettingsMenu  // settings category picker
+	scSettings      // settings / general
+	scSettingsDebug // settings / debug
+	scModels        // settings / models
+	scTools         // toolbox
+	scEnv           // settings / environment
 	scHelp
 )
 
 func (s screen) crumb() string {
 	return map[screen]string{
-		scMenu: "Home", scRun: "Run", scSettings: "Settings",
-		scModels: "Models", scTools: "Toolbox", scEnv: "Environment", scHelp: "Help",
+		scMenu:          "Home",
+		scRun:           "Run",
+		scSettingsMenu:  "Settings",
+		scSettings:      "Settings › General",
+		scSettingsDebug: "Settings › Debug",
+		scModels:        "Settings › Models",
+		scTools:         "Toolbox",
+		scEnv:           "Settings › Environment",
+		scHelp:          "Help",
 	}[s]
 }
 
@@ -51,7 +60,8 @@ func (s screen) crumb() string {
 type runState int
 
 const (
-	rsInput runState = iota // collecting the objective
+	rsTypeSelect runState = iota // choose flat vs plan
+	rsInput                      // collecting the objective
 	rsActive
 	rsDone
 )
@@ -69,26 +79,31 @@ type tuiModel struct {
 	statusText string
 	flash      string // transient status message (saved X, error Y)
 
+	prevScreen screen // for back-navigation in nested screens
+
 	spin spinner.Model
 
-	// menu
+	// home menu
 	menu list.Model
 
 	// run
-	runInput  textinput.Model
-	runMode   string // "flat" | "plan" | "demo" | "plandemo"
-	runState  runState
-	runVP     viewport.Model
-	runLog    []string
-	runResult *RunResult
-	events    chan tea.Msg
-	cancelRun context.CancelFunc
+	runTypeList list.Model
+	runInput    textinput.Model
+	runMode     string // "flat" | "plan"
+	runState    runState
+	runVP       viewport.Model
+	runLog      []string
+	runResult   *RunResult
+	events      chan tea.Msg
+	cancelRun   context.CancelFunc
 
-	// settings
-	settings  list.Model
-	editing   bool
-	editKey   string
-	editInput textinput.Model
+	// settings menu + sub-screens
+	settingsMenu  list.Model
+	settings      list.Model // general settings
+	debugSettings list.Model
+	editing       bool
+	editKey       string
+	editInput     textinput.Model
 
 	// models
 	models     list.Model
@@ -110,7 +125,7 @@ type tuiModel struct {
 	helpVP viewport.Model
 }
 
-// menuItem implements list.DefaultItem for the home menu.
+// menuItem implements list.DefaultItem for navigation lists.
 type menuItem struct{ t, d, id string }
 
 func (i menuItem) Title() string       { return i.t }
@@ -133,16 +148,23 @@ func newTUIModel(cfg *Config) *tuiModel {
 	}
 
 	m.menu = newList([]list.Item{
-		menuItem{"Run an objective", "Drive one goal through the flat ADA loop", "run"},
-		menuItem{"Planning run", "Decompose an open-ended objective and execute", "plan"},
-		menuItem{"Offline demo", "Walk the loop with no model server", "demo"},
-		menuItem{"Planning demo", "Offline decomposition demo", "plandemo"},
-		menuItem{"Models", "List, pull, switch and remove Ollama models", "models"},
-		menuItem{"Settings", "Host, model, decoder, budgets, prompts", "settings"},
+		menuItem{"Run", "Drive an objective through the flat loop or planning mode", "run"},
+		menuItem{"Settings", "General · Debug · Models · Environment", "settings"},
 		menuItem{"Toolbox", "Curate the commands offered to the model", "tools"},
-		menuItem{"Environment", "Inspect the ADA_* knobs", "env"},
 		menuItem{"Help", "Commands & key bindings", "help"},
 		menuItem{"Quit", "Leave ada", "quit"},
+	})
+
+	m.settingsMenu = newList([]list.Item{
+		menuItem{"General", "Connection, model, decoder, budgets, behavior, prompts", "general"},
+		menuItem{"Debug", "Per-run debug logs — tasks, anomalies, facts, planner", "debug"},
+		menuItem{"Models", "List, pull, switch and remove Ollama models", "models"},
+		menuItem{"Environment", "Inspect the ADA_* environment variables", "env"},
+	})
+
+	m.runTypeList = newList([]list.Item{
+		menuItem{"Flat loop", "One objective, deterministic THINK→ACT→ASSERT", "flat"},
+		menuItem{"Planning mode", "Decompose an open-ended objective into verified sub-goals", "plan"},
 	})
 
 	m.runInput = textinput.New()
@@ -157,12 +179,14 @@ func newTUIModel(cfg *Config) *tuiModel {
 	m.pullInput.Width = 40
 
 	m.settings = newList(nil)
+	m.debugSettings = newList(nil)
 	m.models = newList(nil)
 	m.tools = newList(nil)
 	m.runVP = viewport.New(78, 18)
 	m.envVP = viewport.New(78, 18)
 	m.helpVP = viewport.New(78, 18)
 	m.rebuildSettings()
+	m.rebuildDebugSettings()
 	m.rebuildTools()
 	return m
 }
@@ -289,8 +313,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMenu(msg)
 	case scRun:
 		return m.updateRun(msg)
+	case scSettingsMenu:
+		return m.updateSettingsMenu(msg)
 	case scSettings:
 		return m.updateSettings(msg)
+	case scSettingsDebug:
+		return m.updateDebugSettings(msg)
 	case scModels:
 		return m.updateModels(msg)
 	case scTools:
@@ -310,7 +338,10 @@ func (m *tuiModel) resize(w, h int) {
 		bodyH = 4
 	}
 	m.menu.SetSize(w-2, bodyH)
+	m.settingsMenu.SetSize(w-2, bodyH)
 	m.settings.SetSize(w-2, bodyH)
+	m.debugSettings.SetSize(w-2, bodyH)
+	m.runTypeList.SetSize(w-2, bodyH)
 	m.models.SetSize(w-2, bodyH)
 	m.tools.SetSize(w-2, bodyH)
 	m.runVP.Width, m.runVP.Height = w-2, bodyH-2
@@ -335,36 +366,18 @@ func (m *tuiModel) dispatchMenu(id string) (tea.Model, tea.Cmd) {
 	case "quit":
 		return m, tea.Quit
 	case "run":
-		m.screen, m.runMode, m.runState = scRun, "flat", rsInput
-		m.runInput.SetValue("")
-		return m, m.runInput.Focus()
-	case "plan":
-		m.screen, m.runMode, m.runState = scRun, "plan", rsInput
-		m.runInput.SetValue("")
-		return m, m.runInput.Focus()
-	case "demo":
-		m.screen, m.runMode = scRun, "demo"
-		return m, m.startRun("")
-	case "plandemo":
-		m.screen, m.runMode = scRun, "plandemo"
-		return m, m.startRun("")
-	case "models":
-		m.screen, m.loadingMdl = scModels, true
-		return m, tea.Batch(m.cmdLoadModels(), m.spin.Tick)
+		m.screen = scRun
+		m.runState = rsTypeSelect
+		return m, nil
 	case "settings":
-		m.screen = scSettings
-		m.rebuildSettings()
+		m.screen = scSettingsMenu
 		return m, nil
 	case "tools":
 		m.screen = scTools
 		m.rebuildTools()
 		return m, nil
-	case "env":
-		m.screen = scEnv
-		m.envVP.SetContent(m.envContent())
-		m.envVP.GotoTop()
-		return m, nil
 	case "help":
+		m.prevScreen = scMenu
 		m.screen = scHelp
 		m.helpVP.SetContent(renderMarkdown(helpMarkdown))
 		m.helpVP.GotoTop()
@@ -373,9 +386,33 @@ func (m *tuiModel) dispatchMenu(id string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *tuiModel) dispatchSettingsMenu(id string) (tea.Model, tea.Cmd) {
+	switch id {
+	case "general":
+		m.screen = scSettings
+		m.rebuildSettings()
+		return m, nil
+	case "debug":
+		m.screen = scSettingsDebug
+		m.rebuildDebugSettings()
+		return m, nil
+	case "models":
+		m.prevScreen = scSettingsMenu
+		m.screen, m.loadingMdl = scModels, true
+		return m, tea.Batch(m.cmdLoadModels(), m.spin.Tick)
+	case "env":
+		m.prevScreen = scSettingsMenu
+		m.screen = scEnv
+		m.envVP.SetContent(m.envContent())
+		m.envVP.GotoTop()
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m *tuiModel) updateViewport(msg tea.Msg, vp *viewport.Model) (tea.Model, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "esc" || k.String() == "q") {
-		m.screen = scMenu
+		m.screen = m.prevScreen
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -393,8 +430,12 @@ func (m *tuiModel) View() string {
 		footer = "↑/↓ move · enter select · q quit"
 	case scRun:
 		body, footer = m.viewRun()
+	case scSettingsMenu:
+		body, footer = m.viewSettingsMenu()
 	case scSettings:
 		body, footer = m.viewSettings()
+	case scSettingsDebug:
+		body, footer = m.viewDebugSettings()
 	case scModels:
 		body, footer = m.viewModels()
 	case scTools:
@@ -451,10 +492,11 @@ func (m *tuiModel) envContent() string {
 		{"ADA_MAX_ATTEMPTS", itoa(m.cfg.MaxAttempts)}, {"ADA_MAX_ROUTES", itoa(m.cfg.MaxRoutes)},
 		{"ADA_STALL", itoa(m.cfg.Stall)}, {"ADA_MEMORY_ENABLED", btoa(m.cfg.Memory)},
 		{"ADA_MEMORY_FILE", m.cfg.MemoryPath()}, {"ADA_META", btoa(m.cfg.Meta)},
+		{"ADA_DEBUG", btoa(m.cfg.DebugEnabled)}, {"ADA_DEBUG_DIR", m.cfg.DebugDir},
 		{"ADA_COLOR", m.cfg.Color}, {"ADA_CONFIG", m.cfg.Path()},
 	}
 	for _, p := range pairs {
-		b.WriteString("  " + theme.Key.Render(padRight(p[0], 20)) + " " + theme.Val.Render(p[1]) + "\n")
+		b.WriteString("  " + theme.Key.Render(padRight(p[0], 22)) + " " + theme.Val.Render(p[1]) + "\n")
 	}
 	return b.String()
 }

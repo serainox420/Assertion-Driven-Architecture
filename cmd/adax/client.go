@@ -19,8 +19,9 @@ import (
 // tool registry — so the TUI and CLI can change behavior live. It satisfies both
 // ada.LLM (GenerateTask) and ada.Planner (Plan).
 type Client struct {
-	cfg  *Config
-	HTTP *http.Client
+	cfg       *Config
+	HTTP      *http.Client
+	DebugHook func(raw string) // called with raw LLM response; wire to session.CaptureRaw
 }
 
 // NewClient binds a Client to the active config. It carries no global timeout —
@@ -111,6 +112,9 @@ func (c *Client) complete(ctx context.Context, model, system, prompt string, for
 	}
 	if out.Error != "" {
 		return "", fmt.Errorf("ollama error: %s", out.Error)
+	}
+	if c.DebugHook != nil {
+		c.DebugHook(out.Response)
 	}
 	return out.Response, nil
 }

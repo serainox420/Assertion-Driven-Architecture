@@ -65,6 +65,19 @@ type Config struct {
 	SystemPrompt  string `json:"system_prompt,omitempty"`
 	PlannerPrompt string `json:"planner_prompt,omitempty"`
 
+	// ── Debug log mode ────────────────────────────────────────────────────────
+	DebugEnabled      bool   `json:"debug_enabled"`
+	DebugDir          string `json:"debug_dir,omitempty"`
+	DebugLogMeta      bool   `json:"debug_log_meta"`
+	DebugLogTasks     bool   `json:"debug_log_tasks"`
+	DebugLogRawLLM    bool   `json:"debug_log_raw_llm"`
+	DebugLogStdout    bool   `json:"debug_log_stdout"`
+	DebugLogStderr    bool   `json:"debug_log_stderr"`
+	DebugLogAnomalies bool   `json:"debug_log_anomalies"`
+	DebugLogFacts     bool   `json:"debug_log_facts"`
+	DebugLogPlanner   bool   `json:"debug_log_planner"`
+	DebugLogSummary   bool   `json:"debug_log_summary"`
+
 	// ── Tool registry ─────────────────────────────────────────────────────────
 	Tools []Tool `json:"tools,omitempty"`
 
@@ -99,6 +112,17 @@ func DefaultConfig() *Config {
 		Meta:         false,
 		Color:        "auto",
 		Markdown:     true,
+
+		DebugEnabled:      false,
+		DebugLogMeta:      true,
+		DebugLogTasks:     true,
+		DebugLogRawLLM:    true,
+		DebugLogStdout:    true,
+		DebugLogStderr:    true,
+		DebugLogAnomalies: true,
+		DebugLogFacts:     true,
+		DebugLogPlanner:   true,
+		DebugLogSummary:   true,
 	}
 }
 
@@ -173,6 +197,8 @@ func (c *Config) applyEnv() {
 	envBool(&c.Memory, "ADA_MEMORY_ENABLED")
 	envBool(&c.Meta, "ADA_META")
 	envBool(&c.Markdown, "ADA_MARKDOWN")
+	envBool(&c.DebugEnabled, "ADA_DEBUG")
+	envStr(&c.DebugDir, "ADA_DEBUG_DIR")
 
 	if os.Getenv("NO_COLOR") != "" {
 		c.Color = "never"
@@ -315,6 +341,28 @@ func (c *Config) SetField(key, value string) error {
 		return setBool(&c.Meta, value)
 	case "markdown":
 		return setBool(&c.Markdown, value)
+	case "debug_enabled":
+		return setBool(&c.DebugEnabled, value)
+	case "debug_dir":
+		c.DebugDir = value
+	case "debug_log_meta":
+		return setBool(&c.DebugLogMeta, value)
+	case "debug_log_tasks":
+		return setBool(&c.DebugLogTasks, value)
+	case "debug_log_raw_llm":
+		return setBool(&c.DebugLogRawLLM, value)
+	case "debug_log_stdout":
+		return setBool(&c.DebugLogStdout, value)
+	case "debug_log_stderr":
+		return setBool(&c.DebugLogStderr, value)
+	case "debug_log_anomalies":
+		return setBool(&c.DebugLogAnomalies, value)
+	case "debug_log_facts":
+		return setBool(&c.DebugLogFacts, value)
+	case "debug_log_planner":
+		return setBool(&c.DebugLogPlanner, value)
+	case "debug_log_summary":
+		return setBool(&c.DebugLogSummary, value)
 	default:
 		return fmt.Errorf("unknown config key %q (try `ada config list`)", key)
 	}
@@ -347,6 +395,40 @@ func (c *Config) Fields() []ConfigField {
 		{"meta", btoa(c.Meta), "Heuristic meta-controller"},
 		{"markdown", btoa(c.Markdown), "Styled markdown rendering"},
 		{"color", c.Color, "Color mode (auto|always|never)"},
+	}
+}
+
+// DebugFields returns the editable debug-mode config keys with current values.
+func (c *Config) DebugFields() []ConfigField {
+	return []ConfigField{
+		{"debug_enabled", btoa(c.DebugEnabled), "Record full run details to a per-run folder"},
+		{"debug_dir", c.DebugDir, "Override debug folder (blank → $XDG_STATE_HOME/ada/debug)"},
+		{"debug_log_meta", btoa(c.DebugLogMeta), "meta.json — model params, limits, all settings"},
+		{"debug_log_tasks", btoa(c.DebugLogTasks), "tasks.jsonl — full task JSON + result per step"},
+		{"debug_log_raw_llm", btoa(c.DebugLogRawLLM), "Include raw LLM response in tasks.jsonl"},
+		{"debug_log_stdout", btoa(c.DebugLogStdout), "Include decoded stdout in tasks.jsonl"},
+		{"debug_log_stderr", btoa(c.DebugLogStderr), "Include decoded stderr in tasks.jsonl"},
+		{"debug_log_anomalies", btoa(c.DebugLogAnomalies), "anomalies.jsonl — every anomaly payload"},
+		{"debug_log_facts", btoa(c.DebugLogFacts), "facts.jsonl — every fact as established"},
+		{"debug_log_planner", btoa(c.DebugLogPlanner), "planner.jsonl — every planner call (plan mode)"},
+		{"debug_log_summary", btoa(c.DebugLogSummary), "summary.json — final outcome + all facts"},
+	}
+}
+
+// ToDebugConfig converts the debug-related config fields into an ada.DebugConfig.
+func (c *Config) ToDebugConfig() ada.DebugConfig {
+	return ada.DebugConfig{
+		Enabled:      c.DebugEnabled,
+		Dir:          c.DebugDir,
+		LogMeta:      c.DebugLogMeta,
+		LogTasks:     c.DebugLogTasks,
+		LogRawLLM:    c.DebugLogRawLLM,
+		LogStdout:    c.DebugLogStdout,
+		LogStderr:    c.DebugLogStderr,
+		LogAnomalies: c.DebugLogAnomalies,
+		LogFacts:     c.DebugLogFacts,
+		LogPlanner:   c.DebugLogPlanner,
+		LogSummary:   c.DebugLogSummary,
 	}
 }
 
