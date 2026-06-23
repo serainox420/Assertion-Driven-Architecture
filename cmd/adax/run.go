@@ -77,7 +77,7 @@ func executeRun(ctx context.Context, cfg *Config, client *Client, objective stri
 
 		outcome, dec := coord.Run(ctx)
 		mem.Save(coord.Facts())
-		dbg.WriteSummary(outcome, dec.Reason, coord.LastError(), coord.Facts(), 0, 0)
+		dbg.WriteSummary(outcome, dec.Reason, coord.LastError(), coord.Facts(), coord.Steps(), coord.Forks())
 		return RunResult{
 			Outcome:    outcome,
 			PlanReason: dec.Reason,

@@ -34,18 +34,28 @@ type Coordinator struct {
 	ForkTemp           float64  // executor temp on a fork (§9.3)
 	PlanTemp           float64  // planner sampling temperature (a little creativity helps decomposition)
 	Environment        []string // durable host facts shown to planner + executor (§5.3)
-	Log   func(format string, args ...any)
-	Debug *DebugSession // when non-nil, writes planner calls + per-step details
+	Log                func(format string, args ...any)
+	Debug              *DebugSession // when non-nil, writes planner calls + per-step details
 
 	facts     []Fact
 	completed []string // sub-goals achieved (FINISHED/STABLE)
 	failed    []string // sub-goals the runtime could NOT achieve (EXHAUSTED/FAILED)
 	lastError string
+	steps     int // total flat-loop steps summed across every sub-goal (§ measurement)
+	forks     int // total Hard Context Forks summed across every sub-goal
 }
 
 // LastError returns a decoded snippet of the most recent failing command's output
 // across all sub-goals — the "why" behind a STABLE/EXHAUSTED run.
 func (c *Coordinator) LastError() string { return c.lastError }
+
+// Steps returns the total flat-loop steps executed across every sub-goal. Without
+// this a planning run reports total_steps:0 and is unmeasurable — the aggregate is
+// what makes a planning run comparable to a flat one when benchmarking models.
+func (c *Coordinator) Steps() int { return c.steps }
+
+// Forks returns the total Hard Context Forks taken across every sub-goal.
+func (c *Coordinator) Forks() int { return c.forks }
 
 // NewCoordinator returns a Coordinator with documented defaults. Pass the same
 // model object as both llm and planner unless you want a driver/worker split.
@@ -185,6 +195,8 @@ func (c *Coordinator) runSubgoal(ctx context.Context, subgoal string) Outcome {
 	}
 
 	outcome := o.Run(ctx)
+	c.steps += o.Steps() // aggregate so planning runs report real totals, not 0 (§ measurement)
+	c.forks += o.Forks()
 	c.facts = dedupFacts(o.Snapshot.EstablishedFacts)
 	if o.LastError != "" {
 		c.lastError = o.LastError

@@ -146,26 +146,26 @@ func main() {
 		coord.Seed(seed)
 
 		dbg.WriteMeta(map[string]any{
-			"mode":           "plan",
-			"objective":      *objective,
-			"model":          *model,
-			"ollama_url":     *ollamaURL,
-			"max_rounds":     *maxRounds,
-			"goal_steps":     *goalSteps,
-			"max_entropy":    *maxEntropy,
-			"max_facts":      *maxFacts,
-			"max_stuck":      *maxStuck,
-			"max_attempts":   *maxAttempts,
-			"max_routes":     *maxRoutes,
-			"stall":          *stall,
-			"use_memory":     *useMemory,
-			"memory_file":    *memFile,
-			"environment":    ada.HostFacts(),
+			"mode":         "plan",
+			"objective":    *objective,
+			"model":        *model,
+			"ollama_url":   *ollamaURL,
+			"max_rounds":   *maxRounds,
+			"goal_steps":   *goalSteps,
+			"max_entropy":  *maxEntropy,
+			"max_facts":    *maxFacts,
+			"max_stuck":    *maxStuck,
+			"max_attempts": *maxAttempts,
+			"max_routes":   *maxRoutes,
+			"stall":        *stall,
+			"use_memory":   *useMemory,
+			"memory_file":  *memFile,
+			"environment":  ada.HostFacts(),
 		})
 
 		outcome, dec := coord.Run(ctx)
 		mem.Save(coord.Facts())
-		dbg.WriteSummary(outcome, dec.Reason, coord.LastError(), coord.Facts(), 0, 0)
+		dbg.WriteSummary(outcome, dec.Reason, coord.LastError(), coord.Facts(), coord.Steps(), coord.Forks())
 		printSummary(pnt, "PLAN RUN COMPLETE", outcome, dec.Reason,
 			ada.StateSnapshot{Objective: *objective, EstablishedFacts: coord.Facts()}, coord.LastError())
 		return
@@ -191,21 +191,21 @@ func main() {
 	}
 
 	dbg.WriteMeta(map[string]any{
-		"mode":           "flat",
-		"objective":      *objective,
-		"model":          *model,
-		"ollama_url":     *ollamaURL,
-		"max_steps":      *maxSteps,
-		"max_entropy":    *maxEntropy,
-		"max_facts":      *maxFacts,
-		"max_stuck":      *maxStuck,
-		"max_attempts":   *maxAttempts,
-		"max_routes":     *maxRoutes,
-		"stall":          *stall,
-		"use_meta":       *useMeta,
-		"use_memory":     *useMemory,
-		"memory_file":    *memFile,
-		"environment":    ada.HostFacts(),
+		"mode":         "flat",
+		"objective":    *objective,
+		"model":        *model,
+		"ollama_url":   *ollamaURL,
+		"max_steps":    *maxSteps,
+		"max_entropy":  *maxEntropy,
+		"max_facts":    *maxFacts,
+		"max_stuck":    *maxStuck,
+		"max_attempts": *maxAttempts,
+		"max_routes":   *maxRoutes,
+		"stall":        *stall,
+		"use_meta":     *useMeta,
+		"use_memory":   *useMemory,
+		"memory_file":  *memFile,
+		"environment":  ada.HostFacts(),
 	})
 
 	outcome := orch.Run(ctx)

@@ -310,3 +310,53 @@ func TestRewardShaping(t *testing.T) {
 		t.Error("objective completion should reward +100")
 	}
 }
+
+// TestPreconditionSatisfiedByStrongFact: a precondition naming state an established
+// STRONG fact already proves must pass WITHOUT a syscall — the loop's own "don't
+// re-prove what you already know" principle (§3). The fact's path does NOT exist on
+// disk, so a real re-stat would (wrongly) fail the precondition; reaching FINISHED
+// proves the disk was never touched. The fact and the precondition deliberately use
+// DIFFERENT fs notations (`path|dir` vs `path (dir)`), so this also exercises the
+// key normalization that collapses both to one proposition.
+func TestPreconditionSatisfiedByStrongFact(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "never-created")
+	seed := Fact{
+		Statement: "verified: " + absent + " (dir)",
+		SourceID:  "seed",
+		Strength:  StrengthStrong,
+		assertion: Assertion{Type: "fs", Pattern: absent + "|dir", Channel: ChannelFS},
+	}
+	llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) {
+		return Task{
+			ID: "act", Command: "true", Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+			Preconditions: []Assertion{{Type: "fs", Pattern: absent + " (dir)", Channel: ChannelFS}},
+			Assertion:     Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode},
+		}, nil
+	}}
+	orch := NewOrchestrator("demo", llm, NewRuntime())
+	orch.Seed([]Fact{seed})
+
+	if outcome := orch.Run(context.Background()); outcome != OutcomeFinished {
+		t.Fatalf("a precondition proven by a strong fact must let the task run (FINISHED), got %s", outcome)
+	}
+}
+
+// TestPreconditionUnmetWithoutFact is the control for the short-circuit: the SAME
+// task with NO proving fact must NOT run — the precondition is genuinely unmet (the
+// path is absent), so the runtime must refuse the command and the run cannot finish.
+func TestPreconditionUnmetWithoutFact(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "never-created")
+	llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) {
+		return Task{
+			ID: "act", Command: "true", Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+			Preconditions: []Assertion{{Type: "fs", Pattern: absent + " (dir)", Channel: ChannelFS}},
+			Assertion:     Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode},
+		}, nil
+	}}
+	orch := NewOrchestrator("demo", llm, NewRuntime())
+	orch.MaxStuck = 2 // terminate quickly; the command can never run
+
+	if outcome := orch.Run(context.Background()); outcome == OutcomeFinished {
+		t.Fatal("an unmet precondition with no proving fact must NOT reach FINISHED")
+	}
+}

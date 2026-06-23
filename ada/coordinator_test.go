@@ -187,3 +187,87 @@ func TestCoordinatorRePlans(t *testing.T) {
 		t.Errorf("expected 2 facts from the two phases, got %d", len(coord.Facts()))
 	}
 }
+
+// TestCoordinatorAccumulatesSteps: planning mode must report the real total steps
+// summed across sub-goals, not the hardcoded 0 the debug summary used to record
+// (which made every planning run unmeasurable). Two sub-goals that each complete in
+// one step ⇒ Steps()==2, and a clean run forks 0 times.
+func TestCoordinatorAccumulatesSteps(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	has := func(facts []Fact, p string) bool {
+		for _, f := range facts {
+			if strings.Contains(f.Statement, p) {
+				return true
+			}
+		}
+		return false
+	}
+	planFn := func(in PlanInput) (PlanDecision, error) {
+		if has(in.Facts, a) && has(in.Facts, b) {
+			return PlanDecision{Done: true, Reason: "both present"}, nil
+		}
+		var subs []string
+		if !has(in.Facts, a) {
+			subs = append(subs, "make file a at "+a)
+		}
+		if !has(in.Facts, b) {
+			subs = append(subs, "make file b at "+b)
+		}
+		return PlanDecision{Reason: "make the files", Subgoals: subs}, nil
+	}
+	respond := func(s StateSnapshot) (Task, error) {
+		target := a
+		if strings.Contains(s.Objective, "file b") {
+			target = b
+		}
+		return Task{
+			ID: "mk", Command: "touch " + target, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+			Assertion: Assertion{Type: "fs", Pattern: target, Channel: ChannelFS},
+		}, nil
+	}
+	llm := &MockLLM{Respond: respond, PlanFn: planFn}
+	coord := NewCoordinator("make files a and b", llm, llm, NewRuntime())
+
+	if outcome, _ := coord.Run(context.Background()); outcome != OutcomeFinished {
+		t.Fatalf("expected FINISHED, got %s", outcome)
+	}
+	if coord.Steps() != 2 {
+		t.Errorf("expected 2 total steps across two one-step sub-goals, got %d", coord.Steps())
+	}
+	if coord.Forks() != 0 {
+		t.Errorf("a clean run forks 0 times, got %d", coord.Forks())
+	}
+}
+
+// TestCoordinatorAccumulatesForks: a sub-goal the executor can never satisfy burns
+// through its route budget, and those Hard Context Forks must surface in the
+// aggregate (forks were invisible while planning summaries hardcoded total_forks:0).
+func TestCoordinatorAccumulatesForks(t *testing.T) {
+	planFn := func(in PlanInput) (PlanDecision, error) {
+		return PlanDecision{Reason: "try", Subgoals: []string{"do the impossible"}}, nil
+	}
+	respond := func(s StateSnapshot) (Task, error) {
+		// exit 0 but an fs assertion on a path that never exists → a deterministic
+		// failure that drives attempts/entropy to a Hard Context Fork, repeatedly.
+		return Task{
+			ID: "x", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "fs", Pattern: "/no/such/ada-fork-xyz", Channel: ChannelFS},
+		}, nil
+	}
+	llm := &MockLLM{Respond: respond, PlanFn: planFn}
+	coord := NewCoordinator("impossible", llm, llm, NewRuntime())
+	coord.GoalSteps = 12
+	coord.MaxRounds = 1
+	coord.MaxAttemptsPerTask = 2
+	coord.MaxRoutes = 2
+	coord.MaxStuck = 0 // disable the stuck backstop so the route budget governs
+
+	coord.Run(context.Background())
+	if coord.Forks() < 1 {
+		t.Errorf("a sub-goal that exhausts its routes must report >=1 fork, got %d", coord.Forks())
+	}
+	if coord.Steps() < 1 {
+		t.Errorf("expected steps to accumulate, got %d", coord.Steps())
+	}
+}
