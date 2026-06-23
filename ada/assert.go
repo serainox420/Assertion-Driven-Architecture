@@ -253,20 +253,47 @@ func splitFSClauses(pattern string) []string {
 		return []string{pattern}
 	}
 	var out []string
+	var basePath string // the path of the first clause; bare continuation predicates attach to it
 	for _, line := range strings.FieldsFunc(pattern, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		c := strings.TrimSpace(line)
 		if c == "" {
 			continue
 		}
-		if !looksLikeFSClause(c) {
-			return []string{pattern} // not a clean compound — leave it to the single matcher
+		if looksLikeFSClause(c) {
+			if basePath == "" {
+				basePath, _, _ = splitFSPattern(c)
+			}
+			out = append(out, c)
+			continue
 		}
-		out = append(out, c)
+		// A continuation line with NO path of its own: the model wrote several predicates
+		// for the SAME file and repeated the path only once — e.g. `path|contains:A` then
+		// `contains:B`, or `path|contains:A` then a bare `^B$`. Without this, the extra
+		// lines get swallowed into ONE regex that can never match (the `contains:^echo ok$`
+		// health-check loop), so the correctly-written file fails forever. Attach each to
+		// the base path as its own clause instead.
+		if basePath == "" {
+			return []string{pattern} // no base path established yet — not a clean compound
+		}
+		out = append(out, basePath+"|"+continuationPredicate(c))
 	}
 	if len(out) == 0 {
 		return []string{pattern}
 	}
 	return out
+}
+
+// continuationPredicate interprets a bare continuation line (one that carries no path)
+// as an fs predicate for the shared base path. A recognized predicate spelling
+// (contains:/matches:/regex:/nonempty/dir/file/an octal mode…) is kept verbatim;
+// anything else is the raw line-regex the model meant to find IN the file, so it
+// becomes a content (`contains:`) check.
+func continuationPredicate(s string) string {
+	s = strings.TrimSpace(s)
+	if _, ok := canonicalFSPredicate(s); ok {
+		return s
+	}
+	return "contains:" + s
 }
 
 // looksLikeFSClause reports whether s is plausibly a standalone fs clause: an

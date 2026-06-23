@@ -176,6 +176,41 @@ func TestCheckFSCompoundConjunction(t *testing.T) {
 	}
 }
 
+// TestCheckFSContinuationClauses locks in the fix for the health-check loop: the model
+// wrote several content checks for ONE file but repeated the path only ONCE —
+// `f|contains:A\ncontains:B` (or a bare `^B$` on the second line). The path-less
+// continuation used to be swallowed into a single regex that could never match, so a
+// correctly-written file failed forever and the model re-sent the same command. Each
+// continuation predicate must attach to the base path as its own conjunction clause.
+func TestCheckFSContinuationClauses(t *testing.T) {
+	dir := t.TempDir()
+	sh := filepath.Join(dir, "health.sh")
+	if err := os.WriteFile(sh, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The exact health-check shape: path stated once, second clause is a bare `contains:`.
+	bench := sh + "|contains:^#!/bin/sh$\ncontains:^echo ok$"
+	if got := splitFSClauses(bench); len(got) != 2 {
+		t.Fatalf("continuation contains: must split into 2 clauses, got %d: %q", len(got), got)
+	}
+	if !checkFS(bench) {
+		t.Errorf("both lines present — continuation conjunction should pass:\n%q", bench)
+	}
+
+	// A bare regex continuation (no contains: keyword) is treated as a content check.
+	bare := sh + "|contains:^#!/bin/sh$\n^echo ok$"
+	if !checkFS(bare) {
+		t.Errorf("bare-regex continuation should be read as a content clause and pass:\n%q", bare)
+	}
+
+	// If any continuation clause is false, the whole conjunction fails (not a false pass).
+	missing := sh + "|contains:^#!/bin/sh$\ncontains:^echo MISSING$"
+	if checkFS(missing) {
+		t.Errorf("a false continuation clause must fail the conjunction:\n%q", missing)
+	}
+}
+
 // TestCheckFSAccessPredicates covers the writable/readable/executable predicates.
 // They were added after a run looped to its route budget: the model proved a dir
 // writable with a real command (exit 0) but asserted fs `|writable`, which checkFS

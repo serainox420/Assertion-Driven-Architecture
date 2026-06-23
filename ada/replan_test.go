@@ -227,6 +227,85 @@ func TestRecoveryDirectiveByClass(t *testing.T) {
 	}
 }
 
+// A raised temperature explores nothing if the nucleus stays pinned low. NucleusForTemp
+// must widen top_p when sampling hot (so a fork can actually reach a different command)
+// and leave a deterministic low temperature untouched.
+func TestNucleusWidensWhenHot(t *testing.T) {
+	if got := NucleusForTemp(0.0, 0.1); got != 0.1 {
+		t.Errorf("cold sampling must keep the deterministic nucleus, got %v", got)
+	}
+	if got := NucleusForTemp(0.8, 0.1); got < 0.9 {
+		t.Errorf("hot sampling must widen the nucleus to explore, got %v", got)
+	}
+	// An operator who already set a wide nucleus is not narrowed.
+	if got := NucleusForTemp(0.8, 0.95); got != 0.95 {
+		t.Errorf("an already-wide nucleus must be preserved, got %v", got)
+	}
+}
+
+// tempRecordingLLM emits a fixed task each turn and records the temperature it is
+// asked to sample at, so a test can prove the orchestrator perturbs the sampler.
+type tempRecordingLLM struct {
+	task  Task
+	temps *[]float64
+}
+
+func (l tempRecordingLLM) GenerateTask(_ context.Context, _ StateSnapshot, temperature float64) (Task, error) {
+	*l.temps = append(*l.temps, temperature)
+	return l.task, nil
+}
+func (l tempRecordingLLM) Plan(context.Context, PlanInput, float64) (PlanDecision, error) {
+	return PlanDecision{Done: true}, nil
+}
+
+// A verbatim resend must immediately raise the NEXT generation's sampling temperature —
+// without spending the fork/route budget — so the runtime breaks a repeat loop instead
+// of merely advising a model that ignores the advice. This is the behavioral half of the
+// fix; NucleusForTemp is the sampling half.
+func TestResendPerturbsNextGeneration(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "never")
+	var temps []float64
+	llm := tempRecordingLLM{
+		temps: &temps,
+		task: Task{ // identical every turn → a resend after the first failure
+			ID: "same", Command: "echo identical", Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "fs", Pattern: absent, Channel: ChannelFS},
+		},
+	}
+	orch := NewOrchestrator("impossible", llm, NewRuntime())
+	orch.NormalTemp = 0.0
+	orch.ForkTemp = 0.8
+	// Isolate the perturbation from real forks: no attempt/route/entropy fork can fire,
+	// so any elevated temperature MUST come from the resend perturbation.
+	orch.MaxStuck = 0
+	orch.MaxAttemptsPerTask = 0
+	orch.MaxRoutes = 0
+	orch.MaxEntropy = 100
+	orch.MaxSteps = 4
+
+	orch.Run(context.Background())
+
+	if orch.forks != 0 {
+		t.Fatalf("no fork should fire in this setup; got %d", orch.forks)
+	}
+	if len(temps) < 3 {
+		t.Fatalf("expected at least 3 generations, got %d", len(temps))
+	}
+	if temps[0] != orch.NormalTemp {
+		t.Errorf("first generation must sample cold, got %v", temps[0])
+	}
+	// After the first verbatim resend (turn 2), a later generation must sample hot.
+	hot := false
+	for _, tp := range temps[2:] {
+		if tp == orch.ForkTemp {
+			hot = true
+		}
+	}
+	if !hot {
+		t.Errorf("a resend must perturb a later generation to ForkTemp; temps=%v", temps)
+	}
+}
+
 // itoa is a tiny local int→string to avoid pulling strconv into the test for one use.
 func itoa(n int) string {
 	if n == 0 {

@@ -124,7 +124,7 @@ func (c *Client) GenerateTask(ctx context.Context, snapshot ada.StateSnapshot, t
 	resp, err := c.complete(ctx, c.cfg.Model, systemPromptFor(c.cfg), ada.BuildPrompt(snapshot), ada.TaskSchema, map[string]any{
 		"temperature": temperature,
 		"num_predict": c.cfg.NumPredict,
-		"top_p":       c.cfg.TopP,
+		"top_p":       ada.NucleusForTemp(temperature, c.cfg.TopP), // widen the nucleus when sampling hot, else a fork explores nothing
 		"num_ctx":     c.cfg.NumCtx,
 	})
 	if err != nil {

@@ -89,6 +89,7 @@ type Orchestrator struct {
 	thinkFails       int // consecutive invalid Task emissions (free retries)
 	consecutiveFails int
 	forking          bool                      // next generation should sample at ForkTemp (§9.3)
+	perturbNext      bool                      // raise the next generation's sampling after a verbatim resend, before a full fork is due
 	completed        bool                      // a Final task's assertion held — objective proven complete
 	seen             map[string]bool           // verified propositions already established (dedup + stall)
 	attempts         map[string]int            // per-proposition failed attempts in the CURRENT route (reset by a fork)
@@ -175,8 +176,14 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 		// The meta-controller manages strategy BEFORE the model thinks (§10).
 		o.applyMetaAction()
 
+		// Sample hot on a fork (a new strategy) OR when the last turn re-sent an
+		// identical command: a verbatim resend means low-temperature decoding is stuck in
+		// a fixed point, so perturb the sampler NOW rather than wait for the entropy/route
+		// budget to force a full fork. The matching top_p widening lives in the LLM client
+		// (NucleusForTemp) — raising temperature alone, with a pinned-low top_p, explores
+		// nothing.
 		temp := o.NormalTemp
-		if o.forking {
+		if o.forking || o.perturbNext {
 			temp = o.ForkTemp
 		}
 
@@ -208,6 +215,7 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 		o.thinkFails = 0
 		o.steps++
 		o.forking = false
+		o.perturbNext = false // the perturbed generation has been spent
 		o.logf("step=%d THINK id=%s mode=%s channel=%s", o.steps, task.ID, task.Mode, task.Assertion.Channel)
 
 		// Filter preconditions that must not gate the command: ones a strong fact
@@ -337,6 +345,17 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 	res.Anomaly.Command = task.Command
 	res.Anomaly.Tried = o.triedList(key)
 	res.Anomaly.Directive = recoveryDirective(res.Anomaly.FailureClass, n, resent)
+
+	// A verbatim resend proves deterministic decoding is stuck repeating itself. Perturb
+	// the NEXT generation's sampler (raised temperature + a widened nucleus in the client)
+	// so it can actually reach a different command — without spending the fork/route
+	// budget, which still governs when frustration accumulates. This is the runtime
+	// turning "stop banging the same door" into an action, not just advice the small
+	// model may ignore.
+	if resent {
+		o.perturbNext = true
+		o.logf("step=%d RESEND_PERTURB key=%q — raising next-gen sampling to break the repeat", o.steps, key)
+	}
 
 	o.Snapshot.Anomaly = res.Anomaly
 
