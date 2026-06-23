@@ -99,6 +99,20 @@ type AnomalyPayload struct {
 	// the model cannot miss (§8, bounded non-linear recovery).
 	Attempts  int    `json:"attempts,omitempty"`
 	Directive string `json:"directive,omitempty"`
+
+	// Command is the exact command string that just failed — the model's OWN prior
+	// output, surfaced because the model is STATELESS between turns and otherwise
+	// cannot see what it just ran. Without it, a temperature-0 model regenerates the
+	// identical command verbatim (the "banging the same door" loop the user reported).
+	// It is model-authored, not environment data, so unlike ActualOut/Err it is NOT
+	// Base64-muzzled — there is no injection surface in echoing back the model's words.
+	Command string `json:"failed_command,omitempty"`
+
+	// Tried lists the DISTINCT commands already attempted for this same proposition in
+	// the current strategy, each with a short, runtime-authored reason (never decoded
+	// stderr — that stays Base64 in ActualErrB64). It lets the model pick a genuinely
+	// different method instead of cycling the same few. Deduped and capped.
+	Tried []string `json:"already_tried,omitempty"`
 }
 
 // Failure classes (§8.2). Entropy is incremented with a per-class weight.
@@ -119,6 +133,19 @@ type StateSnapshot struct {
 	Anomaly          *AnomalyPayload `json:"anomaly,omitempty"`        // nil when advancing
 	EntropyLevel     int             `json:"entropy_level"`            // distance to a hard fork (§8)
 	DiscoveredState  []string        `json:"discovered_state"`         // tracked side effects (§4.2)
+
+	// BlockedApproaches are commands that failed in earlier, now-ABANDONED strategies
+	// (distilled on each Hard Context Fork). Unlike Anomaly — which a fork clears — they
+	// PERSIST across forks, so a "new strategy" demonstrably avoids the dead ones instead
+	// of rediscovering them. This is what makes a strategy change real rather than a
+	// re-roll of the same dice (§8.3). The model must not re-emit any of these.
+	BlockedApproaches []string `json:"blocked_approaches,omitempty"`
+
+	// Notice is a transient, runtime-authored advisory shown on the NEXT turn — distinct
+	// from Anomaly, which means "your last task FAILED". Notice means "your last task
+	// PASSED but made no progress" (e.g. you re-proved a fact you already hold): a nudge
+	// to finalize or advance rather than loop. Cleared once consumed.
+	Notice string `json:"notice,omitempty"`
 }
 
 // Fact strengths (§3). Downstream mechanisms (compaction, fork, distillation)

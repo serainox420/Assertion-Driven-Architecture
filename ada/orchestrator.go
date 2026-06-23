@@ -88,13 +88,14 @@ type Orchestrator struct {
 	steps            int
 	thinkFails       int // consecutive invalid Task emissions (free retries)
 	consecutiveFails int
-	forking          bool            // next generation should sample at ForkTemp (§9.3)
-	completed        bool            // a Final task's assertion held — objective proven complete
-	seen             map[string]bool // verified propositions already established (dedup + stall)
-	attempts         map[string]int  // per-proposition failed attempts in the CURRENT route (reset by a fork)
-	forks            int             // routes taken: number of Hard Context Forks so far this run
-	dupSuccess       int             // consecutive successes that re-proved existing ground
-	stuckSteps       int             // steps since the last NEW verified fact (not reset by a fork)
+	forking          bool                      // next generation should sample at ForkTemp (§9.3)
+	completed        bool                      // a Final task's assertion held — objective proven complete
+	seen             map[string]bool           // verified propositions already established (dedup + stall)
+	attempts         map[string]int            // per-proposition failed attempts in the CURRENT route (reset by a fork)
+	triedCmds        map[string][]triedAttempt // per-proposition distinct failed commands in the CURRENT route (reset by a fork)
+	forks            int                       // routes taken: number of Hard Context Forks so far this run
+	dupSuccess       int                       // consecutive successes that re-proved existing ground
+	stuckSteps       int                       // steps since the last NEW verified fact (not reset by a fork)
 }
 
 // NewOrchestrator returns an orchestrator with documented defaults.
@@ -116,7 +117,22 @@ func NewOrchestrator(objective string, llm LLM, rt *Runtime) *Orchestrator {
 		Log:                func(string, ...any) {},
 		seen:               make(map[string]bool),
 		attempts:           make(map[string]int),
+		triedCmds:          make(map[string][]triedAttempt),
 	}
+}
+
+// triedAttempt records ONE failed command for a proposition: the command the model
+// emitted, a short runtime-authored reason it failed, and the failure class. The
+// reason is built from trusted fields only (the Expected string, failure class, exit
+// code) — never the decoded stderr, which stays Base64 in the anomaly so the injection
+// defense holds even as we hand the model a plaintext history of what it already tried
+// (§6, §8). The class lets the fork distinguish a genuinely-dead command from one that
+// merely lacked a precondition (the latter must NOT be blocked — it may be exactly
+// right once the prerequisite exists).
+type triedAttempt struct {
+	cmd    string
+	reason string
+	class  string
 }
 
 // Steps returns the number of steps taken in the last Run.
@@ -253,6 +269,11 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 // applyResult routes a result: record a fact on success, or build an anomaly and
 // advance the entropy machinery on failure (§1, §8).
 func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
+	// A Notice is a one-shot advisory: it was shown to the model on the turn that
+	// produced THIS result, so it has served its purpose. Clear it before deciding
+	// whether to raise a fresh one, so it never lingers past the step it described.
+	o.Snapshot.Notice = ""
+
 	if res.Passed {
 		o.consecutiveFails = 0
 		o.Snapshot.Anomaly = nil
@@ -267,12 +288,21 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 		if o.seen[key] {
 			o.dupSuccess++
 			o.stuckSteps++ // re-proving old ground is not progress
+			// Tell the model WHY this added nothing — re-proving a fact it already holds —
+			// and what to do instead. The deterministic stall guard still backstops a model
+			// that ignores the nudge, but a small model that simply never emits final:true
+			// loops StallBudget+1 steps on every already-satisfied sub-goal without it.
+			o.Snapshot.Notice = fmt.Sprintf(
+				"ALREADY PROVEN: %s — you just re-proved an EstablishedFact, which is not progress. "+
+					"If the facts now satisfy the Objective, emit ONE task with \"final\": true; otherwise do the NEXT unfinished step.",
+				factStatement(task))
 			o.logf("step=%d NOPROGRESS id=%s key=%q dup=%d/%d",
 				o.steps, task.ID, key, o.dupSuccess, o.StallBudget)
 			return
 		}
 		o.seen[key] = true
-		delete(o.attempts, key) // this proposition is established; clear its failure budget
+		delete(o.attempts, key)  // this proposition is established; clear its failure budget
+		delete(o.triedCmds, key) // …and its tried-command history — the right command was found
 		o.dupSuccess = 0
 		o.stuckSteps = 0 // genuine progress
 		o.addFact(Fact{
@@ -294,10 +324,20 @@ func (o *Orchestrator) applyResult(task Task, res ExecutionResult) {
 	o.attempts[key]++
 	n := o.attempts[key]
 	res.Anomaly.Attempts = n
-	if n >= 2 {
-		res.Anomaly.Directive = fmt.Sprintf(
-			"This exact approach to the same target has failed %d× in a row. Do NOT resend it — read the autopsy and change the METHOD: a different command or channel, or first establish a missing precondition.", n)
-	}
+
+	// Surface the model's OWN prior output back to it: the command that just failed,
+	// and every distinct command already tried for this target. The model is stateless
+	// between turns, so without this it literally cannot see what it ran and — at
+	// temperature 0 — regenerates the identical command. `resent` is true when this very
+	// command was already on the tried list: the unmistakable "banging the same door"
+	// signal, which earns the sharpest directive regardless of attempt count.
+	norm := normalizeCmd(task.Command)
+	resent := o.cmdAlreadyTried(key, norm)
+	o.recordTried(key, norm, task.Command, res.Anomaly)
+	res.Anomaly.Command = task.Command
+	res.Anomaly.Tried = o.triedList(key)
+	res.Anomaly.Directive = recoveryDirective(res.Anomaly.FailureClass, n, resent)
+
 	o.Snapshot.Anomaly = res.Anomaly
 
 	// Decode the buried stderr/stdout so the human log says WHY it failed, not just
@@ -331,6 +371,103 @@ func (o *Orchestrator) afterFailure(class, key string) {
 			o.logf("step=%d ATTEMPTS_EXHAUSTED key=%q n=%d -> forcing a new strategy", o.steps, key, o.attempts[key])
 		}
 		o.HardContextFork()
+	}
+}
+
+// normalizeCmd collapses a command to a canonical form for dedup: trimmed, with
+// runs of whitespace squeezed to single spaces. Two emissions that differ only in
+// incidental spacing are the SAME approach — and re-sending one is the loop we are
+// trying to break — so they must compare equal.
+func normalizeCmd(cmd string) string {
+	return strings.Join(strings.Fields(cmd), " ")
+}
+
+// cmdAlreadyTried reports whether the normalized command is already on this
+// proposition's tried list for the current route — i.e. the model is resending a
+// command that already failed.
+func (o *Orchestrator) cmdAlreadyTried(key, norm string) bool {
+	for _, a := range o.triedCmds[key] {
+		if normalizeCmd(a.cmd) == norm {
+			return true
+		}
+	}
+	return false
+}
+
+// recordTried appends a failed command (deduped by normalized form) to this
+// proposition's route-scoped history, with a short trusted reason. A verbatim
+// resend is not appended twice — the existing entry already carries the reason.
+func (o *Orchestrator) recordTried(key, norm, cmd string, a *AnomalyPayload) {
+	if o.cmdAlreadyTried(key, norm) {
+		return
+	}
+	if o.triedCmds == nil {
+		o.triedCmds = make(map[string][]triedAttempt)
+	}
+	o.triedCmds[key] = append(o.triedCmds[key], triedAttempt{cmd: cmd, reason: triedReason(a), class: a.FailureClass})
+}
+
+// triedList renders this proposition's recent distinct failed commands as compact
+// "`cmd` → reason" lines for the anomaly, newest-biased and capped so a long run of
+// failures cannot bloat the context window.
+func (o *Orchestrator) triedList(key string) []string {
+	const max = 6
+	attempts := o.triedCmds[key]
+	if len(attempts) > max {
+		attempts = attempts[len(attempts)-max:]
+	}
+	out := make([]string, 0, len(attempts))
+	for _, a := range attempts {
+		out = append(out, fmt.Sprintf("`%s` → %s", shorten(normalizeCmd(a.cmd), 120), a.reason))
+	}
+	return out
+}
+
+// triedReason summarizes WHY an attempt failed using only runtime-authored, trusted
+// fields — the Expected condition, the failure class, and the exit code. It must
+// NEVER fold in decoded stderr/stdout: those stay Base64 in the anomaly so the
+// injection defense (§6) is preserved even though this string is shown in plaintext.
+func triedReason(a *AnomalyPayload) string {
+	exp := shorten(strings.Join(strings.Fields(a.Expected), " "), 90)
+	if exp == "" {
+		return fmt.Sprintf("%s (exit %d)", a.FailureClass, a.ExitCode)
+	}
+	return fmt.Sprintf("%s; expected %s (exit %d)", a.FailureClass, exp, a.ExitCode)
+}
+
+// recoveryDirective is the deterministic "stop, think, try something else" signal,
+// specialized by failure class and escalated on a verbatim resend. Unlike the old
+// directive — which only appeared after the SECOND identical failure and said the
+// same generic thing every time — this gives the model an actionable, class-specific
+// instruction from the FIRST failure for the deterministic classes (a precondition is
+// fixed by establishing the missing state; an env_deterministic failure by pivoting;
+// a model_error by correcting the named defect). A genuinely transient first failure
+// gets no nag — an honest retry is how search works (§8) — but a repeat does.
+func recoveryDirective(class string, n int, resent bool) string {
+	// Precondition first, BEFORE the resend check: the command was never tested — only
+	// the assumption was wrong — so the fix is always "establish the prerequisite", never
+	// "abandon the command". Re-emitting the same command AFTER establishing the
+	// precondition is correct, so it must not be branded a forbidden resend.
+	if class == ClassPrecondition {
+		return "An assumption your command depends on is not true yet (see \"expected\"). Do NOT retry the command as-is — first emit a task that ESTABLISHES the missing precondition (create the dir, install the tool), then act on it."
+	}
+	if resent {
+		return fmt.Sprintf("STOP — you re-sent a command IDENTICAL to one already in already_tried (failed %d×). "+
+			"Re-running it cannot change the result. Emit a DIFFERENT command, a different channel, or first establish a missing precondition.", n)
+	}
+	switch class {
+	case ClassEnvDeterministic:
+		if n >= 2 {
+			return fmt.Sprintf("This approach has failed %d×, and the cause is the environment's state, not your phrasing — retrying the same vector is futile. PIVOT: a different tool or command, a corrected package name, or an alternative that respects the constraint.", n)
+		}
+		return "This failure is DETERMINISTIC (refused / denied / not-found / already-in-use): the identical command will fail again. Change the METHOD, not the wording — a different tool, a corrected name, or fix the missing condition first."
+	case ClassModelError:
+		return "Your command or assertion was malformed (syntax, wrong channel, or a lazy/unanchored regex). Fix the SPECIFIC defect named in \"expected\" — do not resend the same broken form."
+	default: // transient
+		if n >= 2 {
+			return fmt.Sprintf("This exact approach to the same target has failed %d× in a row. Do NOT resend it — read the autopsy (failed_command, already_tried) and change the METHOD: a different command or channel, or first establish a missing precondition.", n)
+		}
+		return ""
 	}
 }
 
@@ -579,11 +716,55 @@ func (o *Orchestrator) HardContextFork() {
 	o.logf("step=%d HARD_FORK entropy=%d route=%d", o.steps, o.Snapshot.EntropyLevel, o.forks)
 	o.RT.KillDaemons()
 	o.Snapshot.EstablishedFacts = o.revalidateWeakFacts(o.Snapshot.EstablishedFacts)
+	// Distill the dead route's failed commands into a memory that SURVIVES the fork.
+	// Clearing the anomaly alone (as before) discarded every trace of what failed, so a
+	// "new strategy" rediscovered the same dead command — the pointless strategy change
+	// the user reported. blocked_approaches persists across forks so the next route can
+	// demonstrably steer around the abandoned commands instead of re-rolling them (§8.3).
+	o.recordBlockedApproaches()
+	if n := len(o.Snapshot.BlockedApproaches); n > 0 {
+		o.logf("step=%d FORK_BLOCKED %d approach(es) carried forward as dead ends", o.steps, n)
+	}
 	o.Snapshot.Anomaly = nil
+	o.Snapshot.Notice = ""
 	o.Snapshot.EntropyLevel = 0
 	o.consecutiveFails = 0
-	o.attempts = make(map[string]int) // new strategy ⇒ fresh per-proposition budgets
-	o.forking = true                  // §9.3: the next generation must perturb the sampler, or it isn't a fork
+	o.attempts = make(map[string]int)             // new strategy ⇒ fresh per-proposition budgets
+	o.triedCmds = make(map[string][]triedAttempt) // route-scoped history resets; the dead ones live on in BlockedApproaches
+	o.forking = true                              // §9.3: the next generation must perturb the sampler, or it isn't a fork
+}
+
+// recordBlockedApproaches folds the just-abandoned route's distinct failed commands
+// into Snapshot.BlockedApproaches, deduped against what is already there and capped so
+// the list cannot grow without bound across many forks. These are the commands the
+// next strategy must NOT revive.
+func (o *Orchestrator) recordBlockedApproaches() {
+	const cap = 12
+	have := make(map[string]bool, len(o.Snapshot.BlockedApproaches))
+	for _, b := range o.Snapshot.BlockedApproaches {
+		have[normalizeCmd(b)] = true
+	}
+	for _, attempts := range o.triedCmds {
+		for _, a := range attempts {
+			// A precondition failure never tested the command — it may be exactly right
+			// once the prerequisite exists. Blocking it would forbid the correct action,
+			// so only genuinely-tested-and-failed commands become blocked approaches.
+			if a.class == ClassPrecondition {
+				continue
+			}
+			norm := normalizeCmd(a.cmd)
+			if norm == "" || have[norm] {
+				continue
+			}
+			have[norm] = true
+			o.Snapshot.BlockedApproaches = append(o.Snapshot.BlockedApproaches, shorten(norm, 120))
+		}
+	}
+	if len(o.Snapshot.BlockedApproaches) > cap {
+		// Keep the most recent — the freshest dead ends are the ones the model is most
+		// likely to try again right now.
+		o.Snapshot.BlockedApproaches = o.Snapshot.BlockedApproaches[len(o.Snapshot.BlockedApproaches)-cap:]
+	}
 }
 
 // revalidateWeakFacts re-checks weak (output-asserted) facts before they seed a
