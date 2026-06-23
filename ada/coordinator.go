@@ -178,15 +178,24 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 				continue
 			}
 			c.logf("round=%d goal=%d/%d START %q", round, i+1, len(dec.Subgoals), sg)
+			before := len(c.facts)
 			outcome := c.runSubgoal(ctx, sg)
-			// Tell the planner the TRUTH about each outcome: only FINISHED/STABLE
-			// (achieved or already held) count as completed; EXHAUSTED/FAILED are
-			// recorded as failures so the planner cannot mistake stuck work for done.
-			// Keep the two lists DEDUPED and DISJOINT — a sub-goal must never appear in
-			// both (a contradictory signal that bloats the planner's context and stalls
-			// re-planning): success clears any prior failure, and neither list repeats.
-			switch outcome {
-			case OutcomeExhausted, OutcomeFailed:
+			gained := len(c.facts) > before
+			// Tell the planner the TRUTH about each outcome — but judge it by the RECORD,
+			// not the label. FINISHED/STABLE are achieved. EXHAUSTED/FAILED normally mean
+			// "could not achieve" and halt the round, since later sub-goals usually depend
+			// on the blocked one. The exception: a sub-goal that recorded NEW verified facts
+			// proved real state, it just never reached a clean terminal — the model satisfied
+			// it in one step but never set final:true, then spent its think-budget on
+			// malformed JSON, so the runtime returned EXHAUSTED with the goal already met.
+			// That is verified PROGRESS, not a blocker. Counting it as a pure failure made
+			// the coordinator re-list a sub-goal it had ACHIEVED and halt every round on it,
+			// so dependent sub-goals never ran (the "/var/www/html is writable" dead-end: the
+			// writable fact was recorded yet the goal sat in failed_subgoals forever). Keep
+			// the two lists DEDUPED and DISJOINT — a sub-goal must never appear in both.
+			progressed := gained && outcome != OutcomeFinished && outcome != OutcomeStable
+			switch {
+			case (outcome == OutcomeExhausted || outcome == OutcomeFailed) && !gained:
 				c.failed = appendUnique(c.failed, sg)
 				roundFailures = append(roundFailures, sg)
 				failed = true
@@ -194,7 +203,11 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 				c.completed = appendUnique(c.completed, sg)
 				c.failed = removeString(c.failed, sg)
 			}
-			c.logf("round=%d goal=%d %s %q", round, i+1, outcome, sg)
+			if progressed {
+				c.logf("round=%d goal=%d %s %q (verified progress; counted as done)", round, i+1, outcome, sg)
+			} else {
+				c.logf("round=%d goal=%d %s %q", round, i+1, outcome, sg)
+			}
 			if failed {
 				// Sub-goals are ORDERED, and the ones after a blocker usually DEPEND on
 				// it (you cannot enable/start nginx if the install failed). Halt the
