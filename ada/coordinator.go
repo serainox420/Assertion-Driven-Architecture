@@ -166,18 +166,33 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 			if ctx.Err() != nil {
 				return OutcomeExhausted, last
 			}
+			// A sub-goal already ACHIEVED in an earlier round is an idempotent end state
+			// whose proving facts already carry forward — re-running it only burns budget
+			// and invites the executor to fixate on a stale task (observed: the model kept
+			// re-emitting a `write_index_html` task while the re-listed, already-done
+			// "refresh databases" sub-goal was active, failing it spuriously and dragging
+			// a completed goal into the failed list). The planner is told "never repeat a
+			// sub-goal already in the facts"; when it does anyway, skip it here.
+			if containsString(c.completed, sg) {
+				c.logf("round=%d goal=%d/%d SKIP %q (already achieved in an earlier round)", round, i+1, len(dec.Subgoals), sg)
+				continue
+			}
 			c.logf("round=%d goal=%d/%d START %q", round, i+1, len(dec.Subgoals), sg)
 			outcome := c.runSubgoal(ctx, sg)
 			// Tell the planner the TRUTH about each outcome: only FINISHED/STABLE
 			// (achieved or already held) count as completed; EXHAUSTED/FAILED are
 			// recorded as failures so the planner cannot mistake stuck work for done.
+			// Keep the two lists DEDUPED and DISJOINT — a sub-goal must never appear in
+			// both (a contradictory signal that bloats the planner's context and stalls
+			// re-planning): success clears any prior failure, and neither list repeats.
 			switch outcome {
 			case OutcomeExhausted, OutcomeFailed:
-				c.failed = append(c.failed, sg)
+				c.failed = appendUnique(c.failed, sg)
 				roundFailures = append(roundFailures, sg)
 				failed = true
 			default:
-				c.completed = append(c.completed, sg)
+				c.completed = appendUnique(c.completed, sg)
+				c.failed = removeString(c.failed, sg)
 			}
 			c.logf("round=%d goal=%d %s %q", round, i+1, outcome, sg)
 			if failed {
@@ -266,4 +281,38 @@ func (c *Coordinator) runSubgoal(ctx context.Context, subgoal string) Outcome {
 		c.lastError = o.LastError
 	}
 	return outcome
+}
+
+// containsString reports whether list holds s.
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// appendUnique appends s to list only when absent, preserving order — so the
+// cumulative completed/failed sub-goal lists shown to the planner never pile up
+// duplicates when the planner re-lists the same sub-goal round after round.
+func appendUnique(list []string, s string) []string {
+	if containsString(list, s) {
+		return list
+	}
+	return append(list, s)
+}
+
+// removeString returns list with every element equal to s removed, preserving
+// order. It keeps completed and failed DISJOINT: a sub-goal that just succeeded is
+// cleared from the failed list, so the planner is never told it both passed and
+// failed.
+func removeString(list []string, s string) []string {
+	out := list[:0:0]
+	for _, x := range list {
+		if x != s {
+			out = append(out, x)
+		}
+	}
+	return out
 }

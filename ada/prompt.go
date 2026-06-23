@@ -116,6 +116,14 @@ retrieve/download files or 404s usually means the package databases are STALE �
 package databases are refreshed (pacman -Syy / apt-get update / dnf makecache)" and only then retry
 the install. A failure is a clue about the environment, not a reason to repeat yourself.
 
+A "target not found" / "unable to locate package" error is DIFFERENT — it means the package NAME does
+not exist in this distro's repositories, so refreshing the DB will NOT help and re-issuing the same
+name just loops. Use the package's CORRECT name for THIS distro (names differ: e.g. the Apache web
+server is the "apache" package on Arch, but "apache2" on Debian/Ubuntu and "httpd" on Fedora/RHEL),
+or drop the package entirely if the objective doesn't need it. Prefer the SIMPLEST mechanism that
+satisfies the objective and don't provision components it never asked for — e.g. "use php to serve" a
+page is met by PHP's built-in server ("php -S 0.0.0.0:PORT -t DIR"); it needs no separate web server.
+
 SOME FAILURES ARE IMMUTABLE ENVIRONMENT CONSTRAINTS, not blockers to repair. "System has not been
 booted with systemd" / "Failed to connect to ... bus" (a container or chroot with no init), a
 read-only filesystem, "operation not permitted" on a kernel knob: NO command this run can change
