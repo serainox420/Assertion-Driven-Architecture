@@ -7,11 +7,22 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // maxFSRead bounds how many bytes a `contains:` content assertion reads from a
 // file, so asserting against a multi-gigabyte log can't exhaust memory (§5).
 const maxFSRead = 1 << 20 // 1 MiB
+
+// POSIX access(2) permission bits, for the writable/readable/executable fs
+// predicates. Defined locally because the syscall package does not export R_OK/
+// W_OK/X_OK on every GOOS. access(2) honors read-only mounts and (for root) the
+// "any exec bit" rule, so it reports REAL writability — not just the mode bits.
+const (
+	accessX = 0x1 // X_OK
+	accessW = 0x2 // W_OK
+	accessR = 0x4 // R_OK
+)
 
 // independentChannel reports whether a channel is an INDEPENDENT-STATE read — the
 // only kind valid as a precondition or postcondition. These channels observe the
@@ -143,6 +154,12 @@ func canonicalFSPredicate(s string) (string, bool) {
 		return "nonempty", true
 	case "empty", "is empty":
 		return "empty", true
+	case "writable", "writeable", "is writable", "is writeable", "can write", "rw":
+		return "writable", true
+	case "readable", "is readable", "can read":
+		return "readable", true
+	case "executable", "exec", "is executable", "can execute":
+		return "executable", true
 	}
 	if _, ok := parseOctalMode(s); ok {
 		return strings.TrimSpace(s), true
@@ -219,15 +236,20 @@ func splitTrailingFSPredicate(p string) (path, spec string, ok bool) {
 //	/var/log/app.log|empty      exists AND size == 0
 //	/etc/app|dir            exists AND is a directory
 //	/etc/app.conf|file      exists AND is a regular file
+//	/var/www/html|writable  exists AND the agent can write to it (access(2))
 //
-// Models reach for `|nonempty` naturally; supporting it (rather than silently
-// failing a ParseUint) is what makes "prove the file is non-empty" achievable.
-// Anchored / regex-escaped paths are normalized first (models over-anchor), and
-// the path/predicate split itself is liberal (splitFSPattern), so `path (dir)`,
-// `path dir`, and `path is a directory` all resolve to the same check as `path|dir`.
+// Models reach for `|nonempty` and `|writable` naturally; supporting them (rather
+// than silently failing a ParseUint) is what makes "prove the dir is writable"
+// achievable instead of an unfalsifiable loop. writable/readable/executable use
+// access(2), so they reflect REAL access (read-only mounts, root's exec rule) —
+// not just the stat mode bits. Anchored / regex-escaped paths are normalized first
+// (models over-anchor), and the path/predicate split itself is liberal
+// (splitFSPattern), so `path (dir)`, `path dir`, and `path is a directory` all
+// resolve to the same check as `path|dir`.
 func checkFS(pattern string) bool {
 	path, spec, hasSpec := splitFSPattern(pattern)
-	info, err := os.Stat(normalizeFSPath(path))
+	npath := normalizeFSPath(path)
+	info, err := os.Stat(npath)
 	if err != nil {
 		return false
 	}
@@ -251,10 +273,16 @@ func checkFS(pattern string) bool {
 		return info.IsDir()
 	case "file", "regular":
 		return info.Mode().IsRegular()
+	case "writable":
+		return syscall.Access(npath, accessW) == nil
+	case "readable":
+		return syscall.Access(npath, accessR) == nil
+	case "executable":
+		return syscall.Access(npath, accessX) == nil
 	}
 	// A content predicate proves WHAT is in the file, by reading it independently.
 	if re, ok := fsContentPattern(spec); ok {
-		data, err := readFileCapped(normalizeFSPath(path), maxFSRead)
+		data, err := readFileCapped(npath, maxFSRead)
 		if err != nil {
 			return false
 		}
