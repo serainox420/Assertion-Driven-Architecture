@@ -39,7 +39,8 @@ HARD RULES
 2. CHANNEL-CORRECT PATTERNS. The "pattern" format depends on "channel" — get this right:
    - fs:        a LITERAL path, optionally with a predicate after '|':
                 "out.log" (exists), "f.log|nonempty" (size>0), "app|0644" (octal mode),
-                "/etc/app|dir", "/etc/app.conf|file", or a CONTENT match
+                "/etc/app|dir", "/etc/app.conf|file", "/var/www/html|writable" (access check),
+                or a CONTENT match
                 "/etc/app.conf|contains:^mode: prod$" (read the file, match an anchored regex).
                 DO NOT anchor or regex the PATH itself — only the contains: pattern is a regex.
                 Prefer fs|contains: to prove a file's CONTENTS changed; it reads the file

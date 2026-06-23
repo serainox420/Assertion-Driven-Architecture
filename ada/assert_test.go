@@ -123,6 +123,61 @@ func TestCheckFSToleratesPredicateNotations(t *testing.T) {
 	}
 }
 
+// TestCheckFSAccessPredicates covers the writable/readable/executable predicates.
+// They were added after a run looped to its route budget: the model proved a dir
+// writable with a real command (exit 0) but asserted fs `|writable`, which checkFS
+// did not understand and so failed every time. access(2) reflects REAL access, so
+// these hold whether the tests run as root or as an unprivileged user.
+func TestCheckFSAccessPredicates(t *testing.T) {
+	dir := t.TempDir() // owned by us, writable + readable + searchable
+	plain := filepath.Join(dir, "plain.txt")
+	if err := os.WriteFile(plain, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(dir, "nope")
+
+	cases := []struct {
+		pattern string
+		want    bool
+	}{
+		{dir + "|writable", true},
+		{dir + "|readable", true},
+		{dir + " is writable", true}, // notation tolerance
+		{dir + " (writable)", true},
+		{plain + "|writable", true}, // a 0644 file we own is writable
+		{plain + "|readable", true},
+		{plain + "|executable", false}, // no exec bit (reliable even as root)
+		{script + "|executable", true}, // has exec bits
+		{absent + "|writable", false},  // a missing path is not writable
+		{absent + "|readable", false},
+	}
+	for _, c := range cases {
+		if got := checkFS(c.pattern); got != c.want {
+			t.Errorf("checkFS(%q) = %v; want %v", c.pattern, got, c.want)
+		}
+	}
+}
+
+// TestFSWritableThroughRuntime drives the exact loop bug end to end: the model
+// asserts an existing writable directory via fs `|writable`. The runtime must
+// adjudicate PASS — previously the unknown predicate failed every time, so the
+// sub-goal forked until its route budget was spent and the run died on step one.
+func TestFSWritableThroughRuntime(t *testing.T) {
+	dir := t.TempDir()
+	rt := NewRuntime()
+	res := rt.Execute(Task{
+		ID: "w", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+		Assertion: Assertion{Type: "fs", Pattern: dir + "|writable", Channel: ChannelFS},
+	})
+	if !res.Passed {
+		t.Error("an existing writable dir must satisfy fs|writable through the runtime")
+	}
+}
+
 // TestFSPredicateNotationThroughRuntime drives the exact post-mortem bug end to
 // end: a model asserts an existing directory with the "(dir)" notation our own
 // factStatement taught it. The runtime must adjudicate it PASS, not stat the
