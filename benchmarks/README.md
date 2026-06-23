@@ -54,6 +54,20 @@ consolidated report** inside it — one Markdown file (`01-<task>.md`,
 `02-<task>.md`, …) containing all enabled debug logging (meta, steps, raw LLM
 responses, anomalies, facts, planner calls, summary).
 
+## Shipped suites
+
+Five suites ship in this folder, roughly easy → hard, all planner-mode:
+
+| Suite | Focus | Difficulty |
+|-------|-------|------------|
+| `planner-basics` | Files, dirs, content, modes; a small multi-file workspace | easy → medium |
+| `file-operations` | Creation, multi-line content, copying, permission bits, a project tree | medium |
+| `text-processing` | CSV headers, case conversion, in-place edits, field extraction, a live-host report | medium → hard |
+| `process-and-ports` | Background processes & listening sockets (ps/ss), idempotent "ensure it is up" | hard |
+| `provisioning` | Directory layouts, multi-key env files, executable scripts, a full mini-service capstone | hard |
+
+`process-and-ports` assumes `python3` is available and ports 8086–8088 are free.
+
 ## Where suites live
 
 Resolved in order: `$ADA_BENCH_DIR`, else `<repo>/benchmarks`, else

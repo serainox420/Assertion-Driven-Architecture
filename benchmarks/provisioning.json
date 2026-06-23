@@ -1,0 +1,37 @@
+{
+  "name": "provisioning",
+  "description": "The hardest suite: realistic provisioning that strings several verified steps together — directory layouts, multi-key env files, executable scripts with specific modes, recorded host facts, and a full mini-service capstone. Each task needs genuine decomposition and proves the result through multiple independent filesystem checks at once.",
+  "mode": "plan",
+  "tasks": [
+    {
+      "name": "app-layout",
+      "objective": "create an application layout under /tmp/ada-bench-prov/app with the subdirectories bin, etc, and var, and prove that all three subdirectories exist",
+      "max_rounds": 5,
+      "goal_steps": 16
+    },
+    {
+      "name": "env-file-three-keys",
+      "objective": "write /tmp/ada-bench-prov/app/etc/app.env containing the three lines 'ENV=prod', 'PORT=8090', and 'NAME=ada', and prove the file contains all three lines",
+      "max_rounds": 5,
+      "goal_steps": 16
+    },
+    {
+      "name": "executable-healthcheck",
+      "objective": "create an executable health-check script /tmp/ada-bench-prov/app/bin/health.sh whose first line is the shebang '#!/bin/sh' and which contains the line 'echo ok', set its mode to 0755, and prove the file exists with mode 0755 and contains a line matching '^echo ok$'",
+      "max_rounds": 6,
+      "goal_steps": 18
+    },
+    {
+      "name": "owner-and-config",
+      "objective": "record the current user into /tmp/ada-bench-prov/app/var/owner.txt and create /tmp/ada-bench-prov/app/etc/config.yaml containing the line 'mode: prod', and prove the owner file is non-empty and the config contains a line matching '^mode: prod$'",
+      "max_rounds": 6,
+      "goal_steps": 18
+    },
+    {
+      "name": "mini-service-capstone",
+      "objective": "provision a complete mini-service at /tmp/ada-bench-prov/srv: create the directories conf and logs, write conf/service.yaml containing the lines 'name: ada' and 'mode: prod', create an executable conf/start.sh (mode 0755) containing the line 'echo starting', and prove that both directories exist, the yaml contains both lines, and start.sh exists with mode 0755",
+      "max_rounds": 8,
+      "goal_steps": 24
+    }
+  ]
+}

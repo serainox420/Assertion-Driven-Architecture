@@ -425,11 +425,13 @@ ada benchmark                 # list available suites
 ada benchmark planner-basics  # run every task in order; prints an N/M scorecard
 ```
 
-The shipped [`benchmarks/planner-basics.json`](benchmarks/planner-basics.json)
-is a good first indicator: five progressively harder planning-mode objectives,
-each observable purely on the local filesystem (no network, no extra packages),
-building from a single file up to a small multi-file workspace that genuinely
-needs decomposition. A task passes when it reaches `FINISHED` or `STABLE`.
+Five suites ship in [`benchmarks/`](benchmarks/), roughly easy → hard:
+`planner-basics` (files, dirs, content, modes), `file-operations` (copying,
+permission bits, a project tree), `text-processing` (transforms proven by
+reading the result back), `process-and-ports` (background processes & listening
+sockets via `ps`/`ss`), and `provisioning` (a full mini-service capstone). Each
+has five progressively harder tasks that genuinely need decomposition. A task
+passes when it reaches `FINISHED` or `STABLE`.
 
 When debug logging is on, a suite run creates a single directory prefixed
 `benchmark-` (instead of the per-run `run-`) and drops **one consolidated report

@@ -467,6 +467,22 @@ func factStatement(t Task) string {
 	a := t.Assertion
 	switch a.Channel {
 	case ChannelFS:
+		// A compound assertion (several newline-joined clauses) is rendered as a
+		// clean, single-line conjunction so the persisted/planner-facing fact stays
+		// legible instead of leaking the raw multi-line pattern.
+		if clauses := splitFSClauses(a.Pattern); len(clauses) > 1 {
+			parts := make([]string, 0, len(clauses))
+			for _, c := range clauses {
+				p, spec, has := splitFSPattern(c)
+				p = normalizeFSPath(p)
+				if has {
+					parts = append(parts, fmt.Sprintf("%s (%s)", p, strings.TrimSpace(spec)))
+				} else {
+					parts = append(parts, p)
+				}
+			}
+			return "verified: " + strings.Join(parts, "; ")
+		}
 		// Parse the same liberal way checkFS does, so a predicate the model wrote in
 		// any notation is rendered canonically (and the "(spec)" we emit here parses
 		// straight back — closing the write-one-notation/read-another loop).

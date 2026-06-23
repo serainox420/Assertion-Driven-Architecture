@@ -1,0 +1,37 @@
+{
+  "name": "file-operations",
+  "description": "Everyday file and directory manipulation: creation, multi-line content, copying, permission bits, and a small directory tree. Medium difficulty — every task is provable on the local filesystem and several exercise multiple independent checks at once.",
+  "mode": "plan",
+  "tasks": [
+    {
+      "name": "inbox-dir-and-marker",
+      "objective": "create the directory /tmp/ada-bench-files/inbox and an empty marker file /tmp/ada-bench-files/inbox/.keep, and prove the directory exists and the marker file exists",
+      "max_rounds": 4,
+      "goal_steps": 10
+    },
+    {
+      "name": "three-line-notes",
+      "objective": "write a file /tmp/ada-bench-files/notes.txt containing exactly the three lines 'alpha', 'beta', and 'gamma' (one per line), and prove the file contains all three lines",
+      "max_rounds": 4,
+      "goal_steps": 12
+    },
+    {
+      "name": "copy-with-content",
+      "objective": "create /tmp/ada-bench-files/src.txt containing the line 'payload', copy it to /tmp/ada-bench-files/copy.txt, and prove that both files exist and both contain the line 'payload'",
+      "max_rounds": 5,
+      "goal_steps": 14
+    },
+    {
+      "name": "secret-mode-0600",
+      "objective": "create /tmp/ada-bench-files/secret.conf containing the line 'token: abc123' with file mode 0600, and prove the file exists with that exact content and mode 0600",
+      "max_rounds": 5,
+      "goal_steps": 14
+    },
+    {
+      "name": "project-tree",
+      "objective": "set up a project under /tmp/ada-bench-files/project with the subdirectories src, build, and dist, place a file project/src/main.txt containing the line 'entrypoint', and prove that all three subdirectories exist and that main.txt contains 'entrypoint'",
+      "max_rounds": 7,
+      "goal_steps": 18
+    }
+  ]
+}

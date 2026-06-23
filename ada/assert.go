@@ -74,9 +74,13 @@ func isLazyAssertion(a Assertion) bool {
 		return lazyRegex(a.Pattern)
 	case ChannelFS:
 		// Only the content predicate is a regex; path/size/mode predicates are not.
-		if _, spec, has := splitFSPattern(a.Pattern); has {
-			if re, ok := fsContentPattern(spec); ok {
-				return lazyRegex(re)
+		// Check every clause of a (possibly compound) pattern so a lazy regex can't
+		// hide behind a well-anchored sibling.
+		for _, c := range splitFSClauses(a.Pattern) {
+			if _, spec, has := splitFSPattern(c); has {
+				if re, ok := fsContentPattern(spec); ok && lazyRegex(re) {
+					return true
+				}
 			}
 		}
 	}
@@ -227,6 +231,53 @@ func splitTrailingFSPredicate(p string) (path, spec string, ok bool) {
 	return "", "", false
 }
 
+// splitFSClauses splits a COMPOUND fs pattern — several independent clauses a
+// model crammed into one assertion, one per line — into its parts. Models do this
+// to assert two things about a file at once, e.g. emitting
+//
+//	/etc/app.yaml|contains:^name: x$
+//	/etc/app.yaml|contains:^mode: prod$
+//
+// as a single assertion pattern (the two lines joined by a newline). Fed whole to
+// one matcher that can never pass, so the step fails forever even though the file
+// is correct — exactly the stuck-then-STABLE failure seen in practice. Treat such
+// a pattern as a conjunction instead: every clause must hold.
+//
+// Only newline-separated patterns whose every line looks like its own fs clause
+// (an absolute path, optionally ^-anchored, optionally with a |predicate) are
+// split. A path can't contain a newline and a `contains:` regex is matched
+// per-line, so an ordinary single pattern never has one — making this safe: a
+// non-compound pattern is returned unchanged as a single clause.
+func splitFSClauses(pattern string) []string {
+	if !strings.ContainsAny(pattern, "\n\r") {
+		return []string{pattern}
+	}
+	var out []string
+	for _, line := range strings.FieldsFunc(pattern, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		c := strings.TrimSpace(line)
+		if c == "" {
+			continue
+		}
+		if !looksLikeFSClause(c) {
+			return []string{pattern} // not a clean compound — leave it to the single matcher
+		}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return []string{pattern}
+	}
+	return out
+}
+
+// looksLikeFSClause reports whether s is plausibly a standalone fs clause: an
+// absolute path (the only shape fs assertions take), tolerating a leading ^ anchor
+// that models over-apply. Used to decide whether a multi-line pattern is a genuine
+// compound conjunction rather than one regex that happens to span lines.
+func looksLikeFSClause(s string) bool {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "^")
+	return strings.HasPrefix(s, "/")
+}
+
 // checkFS verifies filesystem state. The pattern is a path, optionally with a
 // predicate after a '|':
 //
@@ -247,6 +298,16 @@ func splitTrailingFSPredicate(p string) (path, spec string, ok bool) {
 // (splitFSPattern), so `path (dir)`, `path dir`, and `path is a directory` all
 // resolve to the same check as `path|dir`.
 func checkFS(pattern string) bool {
+	// A compound pattern (several newline-separated clauses) is a conjunction:
+	// every clause must hold. Single patterns fall straight through.
+	if clauses := splitFSClauses(pattern); len(clauses) > 1 {
+		for _, c := range clauses {
+			if !checkFS(c) {
+				return false
+			}
+		}
+		return true
+	}
 	path, spec, hasSpec := splitFSPattern(pattern)
 	npath := normalizeFSPath(path)
 	info, err := os.Stat(npath)

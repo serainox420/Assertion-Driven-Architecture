@@ -1,0 +1,37 @@
+{
+  "name": "process-and-ports",
+  "description": "Background processes and listening sockets — the process/exit channels rather than plain files. Hard: tasks must launch work that outlives the command, then prove it through the kernel's process and socket tables (ps/ss), including an idempotent 'ensure it is up' check. Assumes python3 is available and ports 8086-8088 are free.",
+  "mode": "plan",
+  "tasks": [
+    {
+      "name": "background-sleep",
+      "objective": "start a background process running 'sleep 600' and prove that a process whose command line matches 'sleep 600' is running",
+      "max_rounds": 5,
+      "goal_steps": 14
+    },
+    {
+      "name": "http-server-port",
+      "objective": "create the directory /tmp/ada-bench-proc and start a background HTTP server (python3 -m http.server) on port 8086 serving that directory, then prove that port 8086 is listening",
+      "max_rounds": 6,
+      "goal_steps": 16
+    },
+    {
+      "name": "pidfile-live-process",
+      "objective": "start a background 'sleep 700' process, write its PID to /tmp/ada-bench-proc/daemon.pid, and prove that the pid file is non-empty and a process matching 'sleep 700' is running",
+      "max_rounds": 6,
+      "goal_steps": 16
+    },
+    {
+      "name": "ensure-port-listening",
+      "objective": "ensure a background HTTP server is listening on port 8087: if nothing is listening there, start one with python3 -m http.server serving /tmp/ada-bench-proc, then prove that port 8087 is listening",
+      "max_rounds": 7,
+      "goal_steps": 18
+    },
+    {
+      "name": "provision-service",
+      "objective": "provision a tiny service workspace at /tmp/ada-bench-proc/svc: create the directory, start a background python3 -m http.server on port 8088 serving it, record the server's PID into svc/server.pid, and prove the directory exists, port 8088 is listening, and the pid file is non-empty",
+      "max_rounds": 8,
+      "goal_steps": 22
+    }
+  ]
+}
