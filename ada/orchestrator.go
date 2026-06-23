@@ -194,10 +194,11 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 		o.forking = false
 		o.logf("step=%d THINK id=%s mode=%s channel=%s", o.steps, task.ID, task.Mode, task.Assertion.Channel)
 
-		// Don't re-prove what we already know (§3): drop any precondition an
-		// established strong fact already satisfies, so the runtime never re-checks
-		// verified state (no syscall) and can't trip over a notation mismatch on it.
-		task = o.dropProvenPreconditions(task)
+		// Filter preconditions that must not gate the command: ones a strong fact
+		// already proves (§3, no re-check), and SELF-REFERENTIAL ones — a precondition
+		// equal to the task's own result, which would deadlock the command that creates
+		// it (§10). Genuine guards are left intact.
+		task = o.filterPreconditions(task)
 
 		execStart := time.Now()
 		res := o.RT.Execute(task)
@@ -397,25 +398,61 @@ func (o *Orchestrator) preconditionProven(p Assertion) bool {
 	return false
 }
 
-// dropProvenPreconditions removes any precondition already established by a strong
-// fact BEFORE the task reaches the runtime — so the runtime performs no syscall for
-// state we have already verified, and a stale notation on a known-true fact can't
-// manufacture a false PRECONDITION_UNMET. The task is returned unchanged when
-// nothing is dropped.
-func (o *Orchestrator) dropProvenPreconditions(task Task) Task {
+// filterPreconditions removes preconditions that must NOT gate the command before
+// the task reaches the runtime:
+//
+//   - ones an established strong fact already proves (don't re-prove what we know,
+//     and don't let a stale notation manufacture a false PRECONDITION_UNMET), and
+//   - SELF-REFERENTIAL ones — a precondition equal to the task's own assertion or a
+//     postcondition. That "prerequisite" is the very state the command PRODUCES, so
+//     it can only be satisfied by running the command it blocks: a guaranteed
+//     deadlock the model cannot escape (§10 — a precondition is an OTHER prerequisite,
+//     never your own result). Dropping it lets the command run and either succeed or
+//     surface a real error the planner can act on.
+//
+// Genuine guards (a backup that must exist before an rm, a tool installed before it
+// is configured) are not self-referential and are left intact, so "verify before you
+// act" still holds for the assumptions that actually protect against a bad guess.
+func (o *Orchestrator) filterPreconditions(task Task) Task {
 	if len(task.Preconditions) == 0 {
 		return task
 	}
 	kept := make([]Assertion, 0, len(task.Preconditions))
 	for _, p := range task.Preconditions {
-		if o.preconditionProven(p) {
+		switch {
+		case o.preconditionProven(p):
 			o.logf("step=%d PRECONDITION_KNOWN %s (already a strong fact; not re-checking)", o.steps, assertionDesc(p))
-			continue
+		case selfReferentialPrecondition(task, p):
+			o.logf("step=%d PRECONDITION_SELF_REF %s (the task's own result — cannot gate the command that creates it)", o.steps, assertionDesc(p))
+		default:
+			kept = append(kept, p)
 		}
-		kept = append(kept, p)
 	}
 	task.Preconditions = kept
 	return task
+}
+
+// selfReferentialPrecondition reports whether a precondition asserts the very state
+// the task is meant to PRODUCE — it matches the task's own assertion or one of its
+// postconditions (by the same proposition key used for dedup, so notation
+// differences collapse). Requiring your own result as a prerequisite guarantees the
+// command never runs (§10). Only independent-channel preconditions are considered;
+// an invalid-channel precondition is left for the runtime to reject with its own
+// model_error feedback.
+func selfReferentialPrecondition(task Task, p Assertion) bool {
+	if !independentChannel(p.Channel) {
+		return false
+	}
+	key := assertionKey(p)
+	if key == assertionKey(task.Assertion) {
+		return true
+	}
+	for _, q := range task.Postconditions {
+		if key == assertionKey(q) {
+			return true
+		}
+	}
+	return false
 }
 
 // factStatement renders a human- and model-readable description of WHAT a passing

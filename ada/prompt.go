@@ -87,7 +87,9 @@ HARD RULES
     Do NOT list as a precondition the very end-state your command is about to CREATE — requiring the
     binary to exist before the install that installs it, or the file to exist before the command that
     writes it, guarantees the command never runs. Preconditions are OTHER prerequisites, not your own
-    result. And if a tool is simply missing and you cannot install it (exit 127 / permission denied /
+    result. NEVER put the SAME check in both "preconditions" and "assertion": the precondition would
+    block the exact command meant to satisfy the assertion. To install nginx, the assertion is
+    fs /usr/bin/nginx — with NO precondition naming nginx's own files. And if a tool is simply missing and you cannot install it (exit 127 / permission denied /
     non-root), do NOT keep re-issuing the install: PIVOT to an already-present alternative (lscpu,
     uname, free, cat /proc/cpuinfo, /sys) that yields the same information.
 11. CORROBORATE (postconditions). For anything that matters, prove it a SECOND, independent way.
