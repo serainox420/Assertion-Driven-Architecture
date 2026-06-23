@@ -85,13 +85,11 @@ func (m *Memory) logf(format string, args ...any) {
 	}
 }
 
-// Load reads the store and returns the facts RELEVANT to objective, tagged so the
-// runtime re-validates them on use (§ validate-on-use). Facts left by an unrelated
-// previous objective are skipped — never loaded, never re-checked — so they neither
-// cost a syscall nor pollute the planner's context. An empty objective disables
-// scoping (load everything). All IO errors are swallowed: a missing or corrupt store
-// simply yields no prior knowledge, never a crash.
-func (m *Memory) Load(objective string) []Fact {
+// loadRecords reads the raw on-disk records — no objective scoping, no channel
+// filtering — so both Load (which then scopes them) and Save (which MERGES into
+// them) work from the same store. Any IO/parse error yields nil: a missing or
+// corrupt store simply contributes no prior records, never a crash.
+func (m *Memory) loadRecords() []memoryRecord {
 	if m == nil {
 		return nil
 	}
@@ -103,6 +101,20 @@ func (m *Memory) Load(objective string) []Fact {
 	if json.Unmarshal(data, &recs) != nil {
 		return nil
 	}
+	return recs
+}
+
+// Load reads the store and returns the facts RELEVANT to objective, tagged so the
+// runtime re-validates them on use (§ validate-on-use). Facts left by an unrelated
+// previous objective are skipped — never loaded, never re-checked — so they neither
+// cost a syscall nor pollute the planner's context. An empty objective disables
+// scoping (load everything). All IO errors are swallowed: a missing or corrupt store
+// simply yields no prior knowledge, never a crash.
+func (m *Memory) Load(objective string) []Fact {
+	if m == nil {
+		return nil
+	}
+	recs := m.loadRecords()
 	objTokens := significantTokens(objective)
 	var out, skipped int
 	var facts []Fact
@@ -180,6 +192,13 @@ var memoryStopwords = map[string]bool{
 // non-re-checkable channels (exit_code/stdout/stderr, fold summaries) are never
 // written — they cannot be re-validated, so persisting them would mean trusting a
 // stale claim. IO errors are logged and swallowed.
+//
+// The store is a CUMULATIVE knowledge base spanning many objectives (Load scopes
+// it per run), so a save MERGES this run's facts into what previous runs proved —
+// it does NOT replace the file. Without the merge, finishing an "install zsh" run
+// would wipe the "install nginx" facts a prior run learned, defeating the whole
+// point of persistent memory. Fresh facts win on a key collision (they were just
+// observed); older records fill in behind them, newest first, capped at Max.
 func (m *Memory) Save(facts []Fact) {
 	if m == nil {
 		return
@@ -190,7 +209,7 @@ func (m *Memory) Save(facts []Fact) {
 	}
 	seen := make(map[string]bool, len(facts))
 	recs := make([]memoryRecord, 0, len(facts))
-	// Walk most-recent first so the cap retains the freshest knowledge.
+	// Walk THIS run's facts most-recent first so the cap retains the freshest knowledge.
 	for i := len(facts) - 1; i >= 0; i-- {
 		f := facts[i]
 		if f.Strength != StrengthStrong || !independentChannel(f.assertion.Channel) {
@@ -205,13 +224,30 @@ func (m *Memory) Save(facts []Fact) {
 			Statement: f.Statement, Type: f.assertion.Type,
 			Pattern: f.assertion.Pattern, Channel: f.assertion.Channel,
 		})
-		if len(recs) >= max {
-			break
+	}
+	fresh := len(recs)
+	if fresh == 0 {
+		return // nothing new to persist — leave any existing store untouched (never truncate it)
+	}
+
+	// MERGE in records previous runs already proved, skipping any the fresh facts
+	// just superseded (same channel|pattern). The fresh facts sit first, so the cap
+	// keeps the most recent knowledge across runs rather than dropping it.
+	for _, r := range m.loadRecords() {
+		if !independentChannel(r.Channel) {
+			continue // a hand-edited store could hold non-durable records; ignore them
 		}
+		key := r.Channel + "|" + r.Pattern
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		recs = append(recs, r)
 	}
-	if len(recs) == 0 {
-		return
+	if len(recs) > max {
+		recs = recs[:max]
 	}
+
 	if err := os.MkdirAll(filepath.Dir(m.Path), 0o755); err != nil {
 		m.logf("MEMORY_SAVE_ERR %v", err)
 		return
@@ -224,5 +260,5 @@ func (m *Memory) Save(facts []Fact) {
 		m.logf("MEMORY_SAVE_ERR %v", err)
 		return
 	}
-	m.logf("MEMORY_SAVE %d durable fact(s) -> %s", len(recs), m.Path)
+	m.logf("MEMORY_SAVE %d durable fact(s) (%d new) -> %s", len(recs), fresh, m.Path)
 }

@@ -17,6 +17,13 @@ var envDeterministicSignals = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)name or service not known`),
 	regexp.MustCompile(`(?i)address already in use`),
 	regexp.MustCompile(`(?i)disk quota exceeded|no space left`),
+	// systemd / D-Bus unavailable: in a container or chroot with no running init,
+	// `systemctl` can NEVER succeed — the host simply isn't booted with systemd, so
+	// re-running the same command is futile. This is a hard environment fact, not a
+	// transient hiccup; classing it as transient is what let the nginx-on-a-non-booted
+	// -host loop re-issue `systemctl enable/start/is-active` dozens of times in vain.
+	regexp.MustCompile(`(?i)has not been booted with systemd`),
+	regexp.MustCompile(`(?i)failed to connect to .*bus`),
 }
 
 // classifyFailure maps observable signals to a failure class so the entropy

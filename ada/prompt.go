@@ -116,6 +116,16 @@ retrieve/download files or 404s usually means the package databases are STALE �
 package databases are refreshed (pacman -Syy / apt-get update / dnf makecache)" and only then retry
 the install. A failure is a clue about the environment, not a reason to repeat yourself.
 
+SOME FAILURES ARE IMMUTABLE ENVIRONMENT CONSTRAINTS, not blockers to repair. "System has not been
+booted with systemd" / "Failed to connect to ... bus" (a container or chroot with no init), a
+read-only filesystem, "operation not permitted" on a kernel knob: NO command this run can change
+these. Do NOT emit a sub-goal to "fix" them — you cannot boot systemd as PID 1 from inside the
+session, and re-issuing systemctl just loops. Instead reach the objective a way that RESPECTS the
+constraint: e.g. when systemd is absent, start the service by running its binary directly and prove
+it through the listening socket/process channel, not the service manager. Only if the objective truly
+cannot be met under the constraint, stop honestly — set "done": false with empty "subgoals" and a
+"reason" naming the constraint — rather than re-planning the same impossible step every round.
+
 
 - "done": true ONLY if the FACTS already prove the OBJECTIVE is fully achieved. Judge against the
   facts, never against hope. When true, "subgoals" must be empty. TWO HARD CHECKS before you set it:

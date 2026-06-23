@@ -63,6 +63,75 @@ func TestMemoryScopesToObjective(t *testing.T) {
 	}
 }
 
+// Saving NEW facts MERGES into the store rather than overwriting it: the knowledge
+// base is cumulative across objectives (Load scopes per run), so a later run must not
+// wipe what an earlier one proved. Here an "nginx" save followed by a "zsh" save must
+// leave BOTH facts on disk — the bug being fixed truncated the file to just the last
+// run's facts.
+func TestMemorySaveMergesAcrossRuns(t *testing.T) {
+	dir := t.TempDir()
+	m := &Memory{Path: filepath.Join(dir, "knowledge.json"), Log: func(string, ...any) {}}
+
+	m.Save([]Fact{{Statement: "verified: /usr/bin/nginx (file)", Strength: StrengthStrong,
+		assertion: Assertion{Type: "fs", Pattern: "/usr/bin/nginx|file", Channel: ChannelFS}}})
+	// A separate, later run proves a different durable fact.
+	m.Save([]Fact{{Statement: "verified: /usr/bin/zsh (file)", Strength: StrengthStrong,
+		assertion: Assertion{Type: "fs", Pattern: "/usr/bin/zsh|file", Channel: ChannelFS}}})
+
+	all := m.Load("") // empty objective ⇒ no scoping, return every stored fact
+	if len(all) != 2 {
+		t.Fatalf("merge should retain both runs' facts, got %d: %+v", len(all), all)
+	}
+	var haveNginx, haveZsh bool
+	for _, f := range all {
+		haveNginx = haveNginx || strings.Contains(f.Statement, "nginx")
+		haveZsh = haveZsh || strings.Contains(f.Statement, "zsh")
+	}
+	if !haveNginx || !haveZsh {
+		t.Errorf("expected BOTH nginx and zsh facts after merge, got %+v", all)
+	}
+}
+
+// Re-saving the SAME proposition does not duplicate it, and the freshest statement
+// wins — the merge dedups by channel|pattern, it does not append blindly.
+func TestMemorySaveDedupsOnReSave(t *testing.T) {
+	dir := t.TempDir()
+	m := &Memory{Path: filepath.Join(dir, "knowledge.json"), Log: func(string, ...any) {}}
+
+	m.Save([]Fact{{Statement: "old wording", Strength: StrengthStrong,
+		assertion: Assertion{Type: "fs", Pattern: "/usr/bin/nginx|file", Channel: ChannelFS}}})
+	m.Save([]Fact{{Statement: "fresh wording", Strength: StrengthStrong,
+		assertion: Assertion{Type: "fs", Pattern: "/usr/bin/nginx|file", Channel: ChannelFS}}})
+
+	all := m.Load("")
+	if len(all) != 1 {
+		t.Fatalf("re-saving the same proposition must not duplicate it, got %d: %+v", len(all), all)
+	}
+	if all[0].Statement != "fresh wording" {
+		t.Errorf("the freshest statement should win on a key collision, got %q", all[0].Statement)
+	}
+}
+
+// A save with nothing durable must NOT truncate an existing store (it returns early,
+// before any write), so prior runs' facts survive an objective that proved nothing.
+func TestMemorySaveNoDurableKeepsExisting(t *testing.T) {
+	dir := t.TempDir()
+	m := &Memory{Path: filepath.Join(dir, "knowledge.json"), Log: func(string, ...any) {}}
+
+	m.Save([]Fact{{Statement: "verified: /usr/bin/nginx (file)", Strength: StrengthStrong,
+		assertion: Assertion{Type: "fs", Pattern: "/usr/bin/nginx|file", Channel: ChannelFS}}})
+	// A run that proves only non-durable facts must leave the store intact.
+	m.Save([]Fact{
+		{Statement: "weak", Strength: StrengthWeak, assertion: Assertion{Channel: ChannelStdout, Pattern: "^x$"}},
+		{Statement: "exit", Strength: StrengthStrong, assertion: Assertion{Channel: ChannelExitCode, Pattern: "0"}},
+	})
+
+	all := m.Load("")
+	if len(all) != 1 || !strings.Contains(all[0].Statement, "nginx") {
+		t.Fatalf("a no-durable save must preserve the existing store, got %+v", all)
+	}
+}
+
 // A nil *Memory (disabled) is fully safe to use — no panics, no writes.
 func TestMemoryNilSafe(t *testing.T) {
 	var m *Memory
