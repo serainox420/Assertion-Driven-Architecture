@@ -49,7 +49,7 @@ func executeRun(ctx context.Context, cfg *Config, client *Client, objective stri
 	if mem != nil {
 		mem.Log = logf
 	}
-	seed := mem.Load()
+	seed := mem.Load(objective)
 
 	if planMode {
 		rt := ada.NewRuntime()

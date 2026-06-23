@@ -24,6 +24,11 @@ type PlanInput struct {
 	Facts       []Fact   `json:"established_facts"`
 	Completed   []string `json:"completed_subgoals"`
 	Failed      []string `json:"failed_subgoals,omitempty"` // EXHAUSTED/FAILED — NOT achieved
+	// LastError is the decoded diagnostic from the most recent failed command — the
+	// CAUSE behind the latest blocked sub-goal. The planner uses it to repair the
+	// root condition (e.g. refresh a stale package DB) instead of re-issuing the plan
+	// that just failed. Meaningful only when failed_subgoals is non-empty.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // Planner turns a high-level objective + verified facts into the next concrete

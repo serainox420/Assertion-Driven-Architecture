@@ -3,12 +3,15 @@ package ada
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// Memory round-trips durable facts and RE-VALIDATES them on load: a persisted fact
-// whose state no longer holds is dropped, never trusted on faith (§8.3).
-func TestMemoryRoundTripAndRevalidation(t *testing.T) {
+// Memory round-trips the DURABLE subset: only STRONG, independent-state facts are
+// persisted (weak and exit_code are not), and they reload tagged as MEMORY. Load no
+// longer re-stat's them — validation is deferred to first use — so BOTH the present
+// and the (now absent) file come back; neither is trusted yet (that happens on use).
+func TestMemoryRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	present := filepath.Join(dir, "present")
 	if err := os.WriteFile(present, []byte("x"), 0o644); err != nil {
@@ -24,21 +27,46 @@ func TestMemoryRoundTripAndRevalidation(t *testing.T) {
 		{Statement: "ran ok", Strength: StrengthStrong, assertion: Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode}},
 	})
 
-	got := m.Load()
-	// Only the still-true, independently-re-checkable fact survives: weak and
-	// exit_code facts are never persisted, and the absent file fails re-validation.
-	if len(got) != 1 {
-		t.Fatalf("expected exactly 1 re-validated fact, got %d: %+v", len(got), got)
+	got := m.Load("") // empty objective ⇒ no scoping, load all durable facts
+	// Both fs facts persist and reload; weak + exit_code are never written. Validation
+	// is on-use now, so the absent file is NOT dropped at load.
+	if len(got) != 2 {
+		t.Fatalf("expected 2 persisted fs facts (validation deferred to use), got %d: %+v", len(got), got)
 	}
-	if got[0].Statement != "present file" || got[0].Strength != StrengthStrong {
-		t.Errorf("unexpected surviving fact: %+v", got[0])
+	for _, f := range got {
+		if f.SourceID != memorySourceID || f.Strength != StrengthStrong {
+			t.Errorf("memory facts must be tagged MEMORY/strong, got %+v", f)
+		}
+	}
+}
+
+// Load is scoped to the objective: facts left by an UNRELATED previous objective are
+// neither loaded nor (later) re-validated, while facts pertinent to the current
+// objective survive. This is what keeps an "install nginx" run from dragging in (and
+// re-checking) the "/opt/ada-demo" directory facts of a prior objective.
+func TestMemoryScopesToObjective(t *testing.T) {
+	dir := t.TempDir()
+	m := &Memory{Path: filepath.Join(dir, "knowledge.json"), Log: func(string, ...any) {}}
+	m.Save([]Fact{
+		{Statement: "verified: /usr/bin/nginx (file)", Strength: StrengthStrong,
+			assertion: Assertion{Type: "fs", Pattern: "/usr/bin/nginx|file", Channel: ChannelFS}},
+		{Statement: "verified: /opt/ada-demo/config (dir)", Strength: StrengthStrong,
+			assertion: Assertion{Type: "fs", Pattern: "/opt/ada-demo/config|dir", Channel: ChannelFS}},
+	})
+
+	got := m.Load("Install nginx, enable and start the service, prove it is listening on port 80")
+	if len(got) != 1 {
+		t.Fatalf("expected only the nginx-relevant fact to load, got %d: %+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Statement, "nginx") {
+		t.Errorf("the surviving fact should be the nginx one, got %q", got[0].Statement)
 	}
 }
 
 // A nil *Memory (disabled) is fully safe to use — no panics, no writes.
 func TestMemoryNilSafe(t *testing.T) {
 	var m *Memory
-	if got := m.Load(); got != nil {
+	if got := m.Load(""); got != nil {
 		t.Errorf("nil memory Load should return nil, got %+v", got)
 	}
 	m.Save([]Fact{{Statement: "x", Strength: StrengthStrong,

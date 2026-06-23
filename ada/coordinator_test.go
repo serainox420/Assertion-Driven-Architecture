@@ -2,6 +2,7 @@ package ada
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -269,5 +270,155 @@ func TestCoordinatorAccumulatesForks(t *testing.T) {
 	}
 	if coord.Steps() < 1 {
 		t.Errorf("expected steps to accumulate, got %d", coord.Steps())
+	}
+}
+
+// TestCoordinatorHaltsRoundOnFailure: when an ordered sub-goal fails, the sub-goals
+// AFTER it must not run that round — they usually depend on it. The coordinator
+// halts the round and re-plans instead of burning the budget on doomed dependents.
+func TestCoordinatorHaltsRoundOnFailure(t *testing.T) {
+	var ran []string
+	planFn := func(in PlanInput) (PlanDecision, error) {
+		if len(in.Failed) > 0 { // after the failure, give up so the test terminates
+			return PlanDecision{Done: true, Reason: "give up"}, nil
+		}
+		return PlanDecision{Reason: "go", Subgoals: []string{"do A", "do B"}}, nil
+	}
+	respond := func(s StateSnapshot) (Task, error) {
+		if strings.Contains(s.Objective, "do A") {
+			ran = append(ran, "A")
+			return Task{ID: "a", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+				Assertion: Assertion{Type: "fs", Pattern: "/no/such/ada-halt-xyz", Channel: ChannelFS}}, nil
+		}
+		ran = append(ran, "B")
+		return Task{ID: "b", Command: "true", Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+			Assertion: Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode}}, nil
+	}
+	llm := &MockLLM{Respond: respond, PlanFn: planFn}
+	coord := NewCoordinator("ordered objective", llm, llm, NewRuntime())
+	coord.GoalSteps = 2
+	coord.MaxStuck = 2
+	coord.MaxRounds = 3
+
+	coord.Run(context.Background())
+	for _, g := range ran {
+		if g == "B" {
+			t.Fatal("sub-goal B ran even though A failed — the round must halt on the blocker")
+		}
+	}
+}
+
+// TestCoordinatorRePlansFromBlocker is the nginx-mirror scenario in miniature: the
+// install fails with a 404-style error, the coordinator halts and re-plans, the
+// planner READS last_error and inserts a corrective "refresh" sub-goal, and the
+// retry then succeeds. This is "stop, work out why it failed, try a new approach."
+func TestCoordinatorRePlansFromBlocker(t *testing.T) {
+	dir := t.TempDir()
+	refreshed := filepath.Join(dir, "refreshed")
+	installed := filepath.Join(dir, "installed")
+	enabled := filepath.Join(dir, "enabled")
+	has := func(facts []Fact, p string) bool {
+		for _, f := range facts {
+			if strings.Contains(f.Statement, p) {
+				return true
+			}
+		}
+		return false
+	}
+
+	sawBlocker := false
+	planFn := func(in PlanInput) (PlanDecision, error) {
+		switch {
+		case has(in.Facts, installed) && has(in.Facts, enabled):
+			return PlanDecision{Done: true, Reason: "installed and enabled"}, nil
+		case len(in.Failed) > 0 && !has(in.Facts, refreshed):
+			// Diagnose the blocker: the install failed, so REPAIR (refresh) then retry.
+			if strings.Contains(in.LastError, "404") {
+				sawBlocker = true
+			}
+			return PlanDecision{Reason: "refresh then retry", Subgoals: []string{
+				"ensure the package db is refreshed at " + refreshed,
+				"ensure widget is installed at " + installed,
+				"ensure widget is enabled at " + enabled,
+			}}, nil
+		default:
+			return PlanDecision{Reason: "install then enable", Subgoals: []string{
+				"ensure widget is installed at " + installed,
+				"ensure widget is enabled at " + enabled,
+			}}, nil
+		}
+	}
+	respond := func(s StateSnapshot) (Task, error) {
+		switch {
+		case strings.Contains(s.Objective, "refreshed"):
+			return Task{ID: "refresh", Command: "touch " + refreshed, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+				Assertion: Assertion{Type: "fs", Pattern: refreshed, Channel: ChannelFS}}, nil
+		case strings.Contains(s.Objective, "installed"):
+			// The install fails with a 404-style error until the db has been refreshed.
+			cmd := "if [ ! -f " + refreshed + " ]; then echo '404 stale db' >&2; exit 1; fi; touch " + installed
+			return Task{ID: "install", Command: cmd, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+				Assertion: Assertion{Type: "fs", Pattern: installed, Channel: ChannelFS}}, nil
+		default: // enable
+			return Task{ID: "enable", Command: "touch " + enabled, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+				Assertion: Assertion{Type: "fs", Pattern: enabled, Channel: ChannelFS}}, nil
+		}
+	}
+	llm := &MockLLM{Respond: respond, PlanFn: planFn}
+	coord := NewCoordinator("install and enable widget", llm, llm, NewRuntime())
+	coord.GoalSteps = 4
+	coord.MaxStuck = 3
+
+	outcome, _ := coord.Run(context.Background())
+	if outcome != OutcomeFinished {
+		t.Fatalf("expected FINISHED after re-planning around the blocker, got %s", outcome)
+	}
+	if !sawBlocker {
+		t.Error("planner should have received last_error (the 404) to drive the corrective re-plan")
+	}
+	if !has(coord.Facts(), installed) || !has(coord.Facts(), enabled) {
+		t.Errorf("widget should be installed AND enabled after recovery, facts=%+v", coord.Facts())
+	}
+}
+
+// TestCoordinatorRevalidatesMemoryAtCompletion: a planner "done" resting on a fact
+// carried from memory must be re-validated before FINISHED is accepted. The seeded
+// memory fact is stale (its file does not exist), so the first "done" is rejected,
+// the fact is dropped, and the run only finishes once the state is genuinely
+// re-established — never a false completion on a stale claim.
+func TestCoordinatorRevalidatesMemoryAtCompletion(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "thing") // the memory fact CLAIMS this exists
+	has := func(facts []Fact, p string) bool {
+		for _, f := range facts {
+			if strings.Contains(f.Statement, p) {
+				return true
+			}
+		}
+		return false
+	}
+	planCalls := 0
+	planFn := func(in PlanInput) (PlanDecision, error) {
+		planCalls++
+		if has(in.Facts, absent) {
+			return PlanDecision{Done: true, Reason: "the fact says it exists"}, nil
+		}
+		return PlanDecision{Reason: "re-establish it", Subgoals: []string{"ensure thing at " + absent}}, nil
+	}
+	respond := func(s StateSnapshot) (Task, error) {
+		return Task{ID: "mk", Command: "touch " + absent, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+			Assertion: Assertion{Type: "fs", Pattern: absent, Channel: ChannelFS}}, nil
+	}
+	llm := &MockLLM{Respond: respond, PlanFn: planFn}
+	coord := NewCoordinator("ensure thing exists", llm, llm, NewRuntime())
+	coord.Seed([]Fact{{Statement: "verified: " + absent + " (file)", SourceID: memorySourceID,
+		Strength: StrengthStrong, assertion: Assertion{Type: "fs", Pattern: absent + "|file", Channel: ChannelFS}}})
+
+	outcome, _ := coord.Run(context.Background())
+	if planCalls < 2 {
+		t.Errorf("a stale memory fact must force a re-plan, not an instant FINISHED (planCalls=%d)", planCalls)
+	}
+	if outcome == OutcomeFinished {
+		if _, err := os.Stat(absent); err != nil {
+			t.Fatal("reported FINISHED but the asserted file does not exist — false completion from a stale memory fact")
+		}
 	}
 }
