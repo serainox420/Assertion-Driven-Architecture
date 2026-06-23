@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,12 +17,49 @@ type LLM interface {
 	GenerateTask(ctx context.Context, snapshot StateSnapshot, temperature float64) (Task, error)
 }
 
+// extractJSONObject pulls the first complete top-level {...} object out of a model
+// response, tolerating the wrappers small models still add despite grammar-
+// constrained decoding: ```json code fences, a "Here is the task:" preamble, or
+// trailing prose. It scans from the first '{' through its MATCHING '}', honoring
+// quoted strings and escapes so a brace inside a string value does not end it
+// early. If no balanced object is found it returns the input unchanged, so the JSON
+// decoder still reports the original error. This turns a class of avoidable
+// THINK_FAILED retries into clean parses.
+func extractJSONObject(s string) string {
+	start := strings.IndexByte(s, '{')
+	if start < 0 {
+		return s
+	}
+	depth, inStr, esc := 0, false, false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+		case c == '\\':
+			esc = true
+		case c == '"':
+			inStr = !inStr
+		case inStr:
+			// inside a string literal: ignore structural bytes
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return s
+}
+
 // ParseTask decodes (and lightly validates) a Task emitted by the model. A parse
 // failure is returned as an error so the orchestrator can turn it into a virtual
 // assertion failure rather than crashing the loop (§9.2).
 func ParseTask(raw []byte) (Task, error) {
 	var t Task
-	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec := json.NewDecoder(strings.NewReader(extractJSONObject(string(raw))))
 	if err := dec.Decode(&t); err != nil {
 		return Task{}, fmt.Errorf("invalid Task JSON: %w", err)
 	}
@@ -133,7 +171,7 @@ func (o *OllamaLLM) Plan(ctx context.Context, in PlanInput, temperature float64)
 		return PlanDecision{}, err
 	}
 	var dec PlanDecision
-	if err := json.Unmarshal([]byte(resp), &dec); err != nil {
+	if err := json.Unmarshal([]byte(extractJSONObject(resp)), &dec); err != nil {
 		return PlanDecision{}, fmt.Errorf("invalid PlanDecision JSON: %w", err)
 	}
 	return dec, nil
