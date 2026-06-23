@@ -380,6 +380,90 @@ func TestCoordinatorRePlansFromBlocker(t *testing.T) {
 	}
 }
 
+// TestCoordinatorSkipsAlreadyCompletedSubgoal: when the planner re-lists a sub-goal
+// it already ACHIEVED in an earlier round (violating "never repeat a sub-goal already
+// in the facts"), the coordinator must SKIP it rather than re-run it. Re-running burns
+// budget and lets the executor fixate on a stale task — the php/website run re-ran
+// "refresh databases" every round and the executor kept (wrongly) emitting the
+// write-index task during it. The lists shown to the planner must also stay deduped
+// and DISJOINT: a sub-goal that failed once then succeeded moves to completed, never
+// appearing as both.
+func TestCoordinatorSkipsAlreadyCompletedSubgoal(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	aRuns := 0
+	round := 0
+	var lastIn PlanInput
+	hasB := func(in PlanInput) bool {
+		for _, f := range in.Facts {
+			if strings.Contains(f.Statement, b) {
+				return true
+			}
+		}
+		return false
+	}
+	planFn := func(in PlanInput) (PlanDecision, error) {
+		lastIn = in
+		round++
+		if hasB(in) {
+			return PlanDecision{Done: true, Reason: "b proven"}, nil
+		}
+		// Always re-list A (completed after round 1) ahead of the real work, B.
+		return PlanDecision{Reason: "go", Subgoals: []string{"make a at " + a, "make b at " + b}}, nil
+	}
+	respond := func(s StateSnapshot) (Task, error) {
+		if strings.Contains(s.Objective, "make a") {
+			aRuns++
+			return Task{ID: "a", Command: "touch " + a, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+				Assertion: Assertion{Type: "fs", Pattern: a, Channel: ChannelFS}}, nil
+		}
+		// B fails on round 1 (forcing a second round that re-lists the done A), then
+		// succeeds from round 2 on.
+		if round >= 2 {
+			return Task{ID: "b", Command: "touch " + b, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+				Assertion: Assertion{Type: "fs", Pattern: b, Channel: ChannelFS}}, nil
+		}
+		return Task{ID: "b", Command: "true", Mode: ModeBlocking, TimeoutSec: 5,
+			Assertion: Assertion{Type: "fs", Pattern: "/no/such/ada-skip-xyz", Channel: ChannelFS}}, nil
+	}
+	llm := &MockLLM{Respond: respond, PlanFn: planFn}
+	coord := NewCoordinator("a then b", llm, llm, NewRuntime())
+	coord.GoalSteps = 3
+	coord.MaxRounds = 5
+
+	outcome, _ := coord.Run(context.Background())
+	if outcome != OutcomeFinished {
+		t.Fatalf("expected FINISHED once b succeeds, got %s", outcome)
+	}
+	if aRuns != 1 {
+		t.Errorf("sub-goal A must run once and be SKIPPED when re-listed; ran %d times", aRuns)
+	}
+	// B failed in round 1 then succeeded: it must end up in completed, NOT failed.
+	if containsString(lastIn.Failed, "make b at "+b) {
+		t.Errorf("a recovered sub-goal must be cleared from failed; failed=%v", lastIn.Failed)
+	}
+	// No sub-goal may appear in both lists, and neither list may carry duplicates.
+	for _, sg := range lastIn.Completed {
+		if containsString(lastIn.Failed, sg) {
+			t.Errorf("sub-goal %q reported as BOTH completed and failed", sg)
+		}
+	}
+	if n := countString(lastIn.Completed, "make a at "+a); n != 1 {
+		t.Errorf("completed must not carry duplicates; saw A %d times in %v", n, lastIn.Completed)
+	}
+}
+
+// countString counts occurrences of s in list (test helper).
+func countString(list []string, s string) int {
+	n := 0
+	for _, x := range list {
+		if x == s {
+			n++
+		}
+	}
+	return n
+}
+
 // TestCoordinatorRevalidatesMemoryAtCompletion: a planner "done" resting on a fact
 // carried from memory must be re-validated before FINISHED is accepted. The seeded
 // memory fact is stale (its file does not exist), so the first "done" is rejected,
