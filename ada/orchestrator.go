@@ -194,6 +194,11 @@ func (o *Orchestrator) Run(ctx context.Context) Outcome {
 		o.forking = false
 		o.logf("step=%d THINK id=%s mode=%s channel=%s", o.steps, task.ID, task.Mode, task.Assertion.Channel)
 
+		// Don't re-prove what we already know (§3): drop any precondition an
+		// established strong fact already satisfies, so the runtime never re-checks
+		// verified state (no syscall) and can't trip over a notation mismatch on it.
+		task = o.dropProvenPreconditions(task)
+
 		execStart := time.Now()
 		res := o.RT.Execute(task)
 		execMs := time.Since(execStart).Milliseconds()
@@ -328,6 +333,25 @@ func (o *Orchestrator) afterFailure(class, key string) {
 	}
 }
 
+// assertionKey identifies the PROPOSITION an independent-state assertion makes,
+// independent of the command and of the exact notation used. For fs the path is
+// the proposition — so `path|dir`, `path (dir)`, and a bare `path` all collapse to
+// one key (splitFSPattern normalizes the notation); for process/service the pattern
+// is. Generic channels have no stable independent proposition. This is the shared
+// core of factKey and factSeedKey, and the basis for matching a precondition to an
+// already-established fact (Bug 2).
+func assertionKey(a Assertion) string {
+	switch a.Channel {
+	case ChannelFS:
+		path, _, _ := splitFSPattern(a.Pattern)
+		return "fs|" + normalizeFSPath(path)
+	case ChannelProcess, ChannelService:
+		return a.Channel + "|" + strings.TrimSpace(a.Pattern)
+	default:
+		return a.Channel + "|" + a.Pattern
+	}
+}
+
 // factKey identifies the proposition a passing task establishes, so re-proving
 // the same ground is detected as no-progress. For independent-state channels the
 // assertion pattern *is* the proposition (the file/path/service/socket), so the
@@ -336,16 +360,54 @@ func (o *Orchestrator) afterFailure(class, key string) {
 // pattern is too coarse (every "exit 0" would collide), so the command is folded
 // in — distinct actions that happen to share a generic assertion count as progress.
 func factKey(t Task) string {
-	a := t.Assertion
-	switch a.Channel {
-	case ChannelFS:
-		path, _, _ := strings.Cut(a.Pattern, "|")
-		return "fs|" + normalizeFSPath(path)
-	case ChannelProcess, ChannelService:
-		return a.Channel + "|" + strings.TrimSpace(a.Pattern)
+	switch t.Assertion.Channel {
+	case ChannelFS, ChannelProcess, ChannelService:
+		return assertionKey(t.Assertion)
 	default:
-		return a.Channel + "|" + a.Pattern + "|" + strings.TrimSpace(t.Command)
+		return t.Assertion.Channel + "|" + t.Assertion.Pattern + "|" + strings.TrimSpace(t.Command)
 	}
+}
+
+// preconditionProven reports whether an established STRONG fact already proves this
+// precondition, so it need not be re-observed. Preconditions are independent-state
+// (fs/process/service) and the facts that satisfy them were observed through those
+// same independent channels (hence strong), so a key match is proof. This is the
+// loop's own principle turned on itself — don't re-prove what you already know (§3)
+// — and it means a fact we already hold can't be contradicted by a notation
+// mismatch on re-check (it independently defuses the fs-notation bug for facts we
+// have already established).
+func (o *Orchestrator) preconditionProven(p Assertion) bool {
+	if !independentChannel(p.Channel) {
+		return false
+	}
+	key := assertionKey(p)
+	for _, f := range o.Snapshot.EstablishedFacts {
+		if f.Strength == StrengthStrong && assertionKey(f.assertion) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// dropProvenPreconditions removes any precondition already established by a strong
+// fact BEFORE the task reaches the runtime — so the runtime performs no syscall for
+// state we have already verified, and a stale notation on a known-true fact can't
+// manufacture a false PRECONDITION_UNMET. The task is returned unchanged when
+// nothing is dropped.
+func (o *Orchestrator) dropProvenPreconditions(task Task) Task {
+	if len(task.Preconditions) == 0 {
+		return task
+	}
+	kept := make([]Assertion, 0, len(task.Preconditions))
+	for _, p := range task.Preconditions {
+		if o.preconditionProven(p) {
+			o.logf("step=%d PRECONDITION_KNOWN %s (already a strong fact; not re-checking)", o.steps, assertionDesc(p))
+			continue
+		}
+		kept = append(kept, p)
+	}
+	task.Preconditions = kept
+	return task
 }
 
 // factStatement renders a human- and model-readable description of WHAT a passing
@@ -360,7 +422,10 @@ func factStatement(t Task) string {
 	a := t.Assertion
 	switch a.Channel {
 	case ChannelFS:
-		path, spec, has := strings.Cut(a.Pattern, "|")
+		// Parse the same liberal way checkFS does, so a predicate the model wrote in
+		// any notation is rendered canonically (and the "(spec)" we emit here parses
+		// straight back — closing the write-one-notation/read-another loop).
+		path, spec, has := splitFSPattern(a.Pattern)
 		path = normalizeFSPath(path)
 		if has {
 			return fmt.Sprintf("verified: %s (%s)", path, strings.TrimSpace(spec))

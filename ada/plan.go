@@ -2,7 +2,6 @@ package ada
 
 import (
 	"context"
-	"strings"
 )
 
 // PlanDecision is the planner's structured output each round (research §5.6/§6.2).
@@ -40,16 +39,7 @@ type Planner interface {
 // does not waste steps re-proving it. Exact for fs/process/service; best-effort
 // for generic channels (the originating command is not retained on a Fact).
 func factSeedKey(f Fact) string {
-	a := f.assertion
-	switch a.Channel {
-	case ChannelFS:
-		path, _, _ := strings.Cut(a.Pattern, "|")
-		return "fs|" + normalizeFSPath(path)
-	case ChannelProcess, ChannelService:
-		return a.Channel + "|" + strings.TrimSpace(a.Pattern)
-	default:
-		return a.Channel + "|" + a.Pattern
-	}
+	return assertionKey(f.assertion)
 }
 
 // dedupFacts removes facts with duplicate statements, preserving order. Facts

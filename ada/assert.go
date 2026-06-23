@@ -63,7 +63,7 @@ func isLazyAssertion(a Assertion) bool {
 		return lazyRegex(a.Pattern)
 	case ChannelFS:
 		// Only the content predicate is a regex; path/size/mode predicates are not.
-		if _, spec, has := strings.Cut(a.Pattern, "|"); has {
+		if _, spec, has := splitFSPattern(a.Pattern); has {
 			if re, ok := fsContentPattern(spec); ok {
 				return lazyRegex(re)
 			}
@@ -126,6 +126,90 @@ func normalizeFSPath(p string) string {
 	return strings.NewReplacer(`\.`, `.`, `\/`, `/`, `\-`, `-`, `\_`, `_`, `\ `, ` `).Replace(p)
 }
 
+// canonicalFSPredicate recognizes the many spellings a model emits for an fs
+// predicate and maps each to the canonical keyword checkFS understands. Octal-mode
+// ("0644", "mode=0644") and content ("contains:<re>") predicates are returned
+// verbatim, since checkFS parses those itself. ok=false means the string is NOT a
+// predicate — so the caller must keep it as part of the path, never drop it.
+func canonicalFSPredicate(s string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "exists", "exist", "present", "any", "any type":
+		return "exists", true
+	case "dir", "directory", "folder", "is a directory", "is a dir", "isdir", "a directory":
+		return "dir", true
+	case "file", "regular", "regular file", "is a file", "is a regular file", "a file", "isfile":
+		return "file", true
+	case "nonempty", "non-empty", "non empty", "notempty", "not empty", "is not empty", "is non-empty", "is nonempty", "has content":
+		return "nonempty", true
+	case "empty", "is empty":
+		return "empty", true
+	}
+	if _, ok := parseOctalMode(s); ok {
+		return strings.TrimSpace(s), true
+	}
+	if _, ok := fsContentPattern(s); ok {
+		return strings.TrimSpace(s), true
+	}
+	return "", false
+}
+
+// splitFSPattern separates an fs pattern into a path and an optional predicate,
+// tolerating every notation a model realistically emits. The canonical form is
+// `path|predicate`, but models also write `path (predicate)` — the exact shape our
+// own factStatement renders ("verified: /etc/app (dir)") and then reads back out of
+// EstablishedFacts — plus `path predicate` and prose like `path is a directory`.
+// Model output is untrusted input: parse it liberally here, then let checkFS
+// validate strictly. A non-canonical predicate is normalized to the keyword checkFS
+// understands; a bare path with no recognizable predicate is returned whole (an
+// existence check), never mangled.
+func splitFSPattern(pattern string) (path, spec string, hasSpec bool) {
+	p := strings.TrimSpace(pattern)
+	if p == "" {
+		return "", "", false
+	}
+	// 1. Canonical pipe form. Trust the '|' verbatim: a content regex may itself
+	//    contain '|', and cutting on the FIRST '|' keeps that regex intact as spec.
+	if before, after, ok := strings.Cut(p, "|"); ok {
+		return strings.TrimSpace(before), strings.TrimSpace(after), true
+	}
+	// 2. Parenthesized suffix: `path (dir)`. This is the single most common
+	//    malformed shape, because it mirrors factStatement's own rendering.
+	if i := strings.LastIndexByte(p, '('); i > 0 && strings.HasSuffix(p, ")") {
+		if pred, ok := canonicalFSPredicate(p[i+1 : len(p)-1]); ok {
+			return strings.TrimSpace(p[:i]), pred, true
+		}
+	}
+	// 3. Trailing predicate word/phrase: `path dir`, `path is a directory`,
+	//    `path 0755`. Only a RECOGNIZED predicate is peeled off, so an ordinary path
+	//    keeps its final segment.
+	if before, pred, ok := splitTrailingFSPredicate(p); ok {
+		return before, pred, true
+	}
+	// 4. A bare path: existence check.
+	return p, "", false
+}
+
+// splitTrailingFSPredicate peels a recognized predicate off the end of a
+// space-separated, pipe-less pattern. It scans spaces left-to-right and splits at
+// the first whose suffix is a recognized predicate, so the LONGEST predicate wins
+// (multi-word "is a regular file" binds before the bare "file") and the path prefix
+// is taken from the original bytes, preserving any internal spacing.
+func splitTrailingFSPredicate(p string) (path, spec string, ok bool) {
+	for i := 1; i < len(p); i++ {
+		if p[i] != ' ' {
+			continue
+		}
+		prefix := strings.TrimSpace(p[:i])
+		if prefix == "" {
+			continue
+		}
+		if pred, found := canonicalFSPredicate(p[i+1:]); found {
+			return prefix, pred, true
+		}
+	}
+	return "", "", false
+}
+
 // checkFS verifies filesystem state. The pattern is a path, optionally with a
 // predicate after a '|':
 //
@@ -138,15 +222,23 @@ func normalizeFSPath(p string) string {
 //
 // Models reach for `|nonempty` naturally; supporting it (rather than silently
 // failing a ParseUint) is what makes "prove the file is non-empty" achievable.
-// Anchored / regex-escaped paths are normalized first (models over-anchor).
+// Anchored / regex-escaped paths are normalized first (models over-anchor), and
+// the path/predicate split itself is liberal (splitFSPattern), so `path (dir)`,
+// `path dir`, and `path is a directory` all resolve to the same check as `path|dir`.
 func checkFS(pattern string) bool {
-	path, spec, hasSpec := strings.Cut(pattern, "|")
+	path, spec, hasSpec := splitFSPattern(pattern)
 	info, err := os.Stat(normalizeFSPath(path))
 	if err != nil {
 		return false
 	}
 	if !hasSpec {
 		return true
+	}
+	// A model may pipe a non-canonical predicate spelling straight through
+	// (`path|folder`, `path|is a directory`); fold it to the keyword the switch
+	// understands. Mode and content predicates pass through unchanged.
+	if canon, ok := canonicalFSPredicate(spec); ok {
+		spec = canon
 	}
 	switch strings.ToLower(strings.TrimSpace(spec)) {
 	case "exists":
