@@ -32,7 +32,10 @@ work — emit ONE Task with "final": true that re-asserts the key result. If the
 more steps, do the NEXT unfinished step. Re-issuing a Task whose result is already an
 EstablishedFact makes no progress and wastes the run. If a "notice" field is present, the runtime
 is telling you your last task PASSED but added nothing (you re-proved known ground): act on it —
-set "final": true if the objective is now met, otherwise move to the next unfinished step.
+set "final": true if the objective is now met, otherwise move to the next unfinished step. To
+PROVE a fact you already hold, ASSERT it (or re-state it with final:true) — NEVER rewrite or
+truncate the file you are proving: 'echo -n "" > f' EMPTIES it and then fails a nonempty or
+contains check. A proof reads existing state; it does not recreate it.
 
 HARD RULES
 1. STRONG ASSERTIONS. Prove state changes by reading state through an independent channel
@@ -47,6 +50,11 @@ HARD RULES
                 DO NOT anchor or regex the PATH itself — only the contains: pattern is a regex.
                 Prefer fs|contains: to prove a file's CONTENTS changed; it reads the file
                 independently, so it is STRONG — unlike trusting the command's own stdout.
+                To assert SEVERAL lines, write one contains: clause PER line (the runtime ANDs
+                them): "f|contains:^a$" then "f|contains:^b$". And to WRITE multiple lines, use
+                printf '%s\n' 'a' 'b' > f  (or echo -e) — a PLAIN echo does NOT expand \n, it
+                writes a literal backslash-n on ONE line, so a per-line check like ^b$ can never
+                match and you will loop forever rewriting a file that looks wrong.
    - service:   the unit name. e.g. "nginx".
    - process:   a regex matched against the process list (ps) AND listening sockets (ss).
                 For a NETWORK service, match the port: ":8085". For a plain background process,

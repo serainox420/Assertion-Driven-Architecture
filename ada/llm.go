@@ -145,12 +145,33 @@ func (o *OllamaLLM) complete(ctx context.Context, system, prompt string, format 
 	return out.Response, nil
 }
 
+// NucleusForTemp widens the nucleus (top_p) whenever the orchestrator samples at an
+// exploratory temperature. A Hard Context Fork — or a resend perturbation — raises the
+// temperature precisely to force a DIFFERENT command, but a hotter temperature explores
+// NOTHING if top_p stays pinned low: a small top_p clamps the nucleus to the few
+// highest-probability tokens, so the model re-emits the IDENTICAL command no matter how
+// high the temperature. That is exactly the "forcing a different strategy did nothing"
+// failure — the fork raised temperature while top_p stayed at 0.1. When the temperature
+// is exploratory, ensure the nucleus is wide enough to admit genuine alternatives;
+// otherwise leave the caller's deterministic top_p untouched (low temp ⇒ reliability).
+func NucleusForTemp(temperature, baseTopP float64) float64 {
+	const exploratory = 0.5
+	if temperature >= exploratory && baseTopP < exploreTopP {
+		return exploreTopP
+	}
+	return baseTopP
+}
+
+// exploreTopP is the nucleus used while sampling hot — wide enough that a raised
+// temperature can actually reach a different command.
+const exploreTopP = 0.9
+
 // GenerateTask issues one grammar-constrained completion and parses the result.
 func (o *OllamaLLM) GenerateTask(ctx context.Context, snapshot StateSnapshot, temperature float64) (Task, error) {
 	resp, err := o.complete(ctx, SystemPrompt, BuildPrompt(snapshot), TaskSchema, map[string]any{
-		"temperature": temperature, // 0.0 normal; raised on fork (§9.3)
-		"num_predict": 1024,        // headroom so a longer Task JSON isn't truncated mid-object
-		"top_p":       0.1,
+		"temperature": temperature,                      // 0.0 normal; raised on fork (§9.3)
+		"num_predict": 1024,                             // headroom so a longer Task JSON isn't truncated mid-object
+		"top_p":       NucleusForTemp(temperature, 0.1), // widen the nucleus when sampling hot, or a fork explores nothing
 		"num_ctx":     o.NumCtx,
 	})
 	if err != nil {
