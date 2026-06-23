@@ -54,6 +54,14 @@ HARD RULES
    - exit_code: the expected integer as a string, e.g. "0". To prove a tool is INSTALLED, run
                 ` + "`command -v <tool>`" + ` and assert exit_code "0" (or assert ` + "`fs`" + ` on its path).
    - stdout/stderr: an ANCHORED regex (^...$), and ONLY when the output itself is the goal.
+   - HTTP via curl: the response STATUS LINE "HTTP/1.1 200 OK" appears ONLY with ` + "`curl -i`/`-I`" + `. A
+                bare ` + "`curl -s URL`" + ` prints ONLY the body; ` + "`curl -s -o /dev/null -w '%{http_code}' URL`" + `
+                prints ONLY the number. So pick the command to MATCH the assertion: to prove a 200, run the
+                ` + "`-w '%{http_code}'`" + ` form and assert stdout ` + "`^200$`" + `; to prove CONTENT, run ` + "`curl -s URL`" + ` and
+                assert stdout against the bytes you ACTUALLY wrote (e.g. ` + "`<title>My Site</title>`" + `). NEVER assert
+                ` + "`^HTTP/1\\.1 200 OK`" + ` unless the command emits headers (-i/-I) — it is not in the body or the
+                ` + "`%{http_code}`" + ` number, so that check can never pass. And assert the content you REALLY wrote,
+                not a paraphrase of it.
 3. NO LAZY REGEX on stdout/stderr. Anchor with ^...$. An unanchored [0-9]+ matches a stray
    digit in an error message and falsely reports success.
 4. ABSOLUTE PATHS. Each command is a fresh, stateless bash session. cd and env exports DO NOT
