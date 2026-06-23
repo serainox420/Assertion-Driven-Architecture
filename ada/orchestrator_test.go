@@ -406,3 +406,64 @@ func TestMemoryFactValidatedOnUse(t *testing.T) {
 		}
 	})
 }
+
+// TestSelfReferentialPreconditionDropped: the model guards a command with a
+// precondition IDENTICAL to the task's own assertion — the state the command
+// creates. That can only be satisfied by running the command it blocks (a deadlock,
+// exactly the nginx self-block from the post-mortem). The orchestrator must drop the
+// self-referential precondition so the command runs and establishes the state.
+func TestSelfReferentialPreconditionDropped(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "made") // created by the command; asserted AND preconditioned
+	llm := ScriptedLLM(Task{
+		ID: "make", Command: "touch " + target, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+		Preconditions: []Assertion{{Type: "fs", Pattern: target, Channel: ChannelFS}},
+		Assertion:     Assertion{Type: "fs", Pattern: target, Channel: ChannelFS},
+	})
+	orch := NewOrchestrator("make the file", llm, NewRuntime())
+	if got := orch.Run(context.Background()); got != OutcomeFinished {
+		t.Fatalf("a self-referential precondition must be dropped so the command runs (FINISHED), got %s", got)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("the command should have run and created the file: %v", err)
+	}
+}
+
+// TestSelfReferentialPreconditionMatchesPostcondition: the end-state may live in a
+// postcondition while the assertion is just exit_code 0. A precondition equal to
+// that postcondition is still self-referential and must be dropped.
+func TestSelfReferentialPreconditionMatchesPostcondition(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "out")
+	llm := ScriptedLLM(Task{
+		ID: "make", Command: "touch " + target, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+		Preconditions:  []Assertion{{Type: "fs", Pattern: target, Channel: ChannelFS}},
+		Assertion:      Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode},
+		Postconditions: []Assertion{{Type: "fs", Pattern: target, Channel: ChannelFS}},
+	})
+	orch := NewOrchestrator("make with postcondition", llm, NewRuntime())
+	if got := orch.Run(context.Background()); got != OutcomeFinished {
+		t.Fatalf("a precondition equal to a POSTcondition must be dropped (FINISHED), got %s", got)
+	}
+}
+
+// TestGenuinePreconditionStillGates is the safety control: a precondition that is
+// NOT the task's own result (a real external prerequisite) must still gate the
+// command — the self-block fix must not weaken legitimate "verify before you act"
+// guards (a backup before an rm, a tool before configuring it).
+func TestGenuinePreconditionStillGates(t *testing.T) {
+	dir := t.TempDir()
+	prereq := filepath.Join(dir, "prereq") // a genuine prerequisite, absent
+	target := filepath.Join(dir, "target") // the command's result
+	llm := ScriptedLLM(Task{
+		ID: "act", Command: "touch " + target, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+		Preconditions: []Assertion{{Type: "fs", Pattern: prereq, Channel: ChannelFS}}, // != assertion
+		Assertion:     Assertion{Type: "fs", Pattern: target, Channel: ChannelFS},
+	})
+	orch := NewOrchestrator("act with a real prerequisite", llm, NewRuntime())
+	orch.MaxStuck = 2
+	orch.Run(context.Background())
+	if _, err := os.Stat(target); err == nil {
+		t.Error("a genuine unmet precondition must gate the command — it ran anyway")
+	}
+}
