@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
 )
 
 // Memory is a persistent, RE-VALIDATED knowledge store: the "learn it once"
@@ -11,13 +13,16 @@ import (
 // to a file and reloaded in the next, so it does not re-derive the same basic
 // truths for every task.
 //
-// The bulletproof part is the re-validation: a persisted fact is NEVER trusted on
-// faith. Only STRONG facts on INDEPENDENT-STATE channels (fs/process/service) are
-// stored — precisely the facts that can be re-checked by reading the world — and
-// every one is re-observed on load (exactly as a Hard Context Fork re-validates
-// weak facts, §8.3). A fact that no longer holds is silently dropped. So memory
-// saves the model the STEPS of rediscovery without ever letting a stale claim leak
-// in as truth: trust still comes only from a fresh, deterministic observation.
+// Two rules keep it from poisoning a fresh run. (1) SCOPE: only facts relevant to
+// the CURRENT objective are loaded — an "install nginx" run does not drag in (or
+// re-check) directory facts left by an unrelated previous objective. (2) VALIDATE
+// ON USE: a persisted fact is never trusted on faith, but it is no longer re-stat'd
+// eagerly at load; it is re-observed exactly when the run leans on it (as a
+// precondition short-circuit, or before the planner's completion is accepted). Only
+// STRONG facts on INDEPENDENT-STATE channels (fs/process/service) are ever stored —
+// precisely the facts that can be re-checked by reading the world — so a stale claim
+// is dropped the moment it is relied on, never laundered into truth. Trust still
+// comes only from a fresh, deterministic observation (§8.3).
 type Memory struct {
 	Path string // file backing the store
 	Max  int    // cap on retained records (most-recent kept); 0 ⇒ defaultMemoryMax
@@ -25,6 +30,11 @@ type Memory struct {
 }
 
 const defaultMemoryMax = 64
+
+// memorySourceID tags facts carried in from the persistent store, so the runtime
+// knows to re-validate them ON USE (a current-run fact was just observed and is
+// trusted directly; a memory fact may be stale and must be re-checked when relied on).
+const memorySourceID = "MEMORY"
 
 // memoryRecord is the on-disk form of a durable fact: enough to rebuild the
 // assertion and re-validate it. Only re-checkable channels are ever written.
@@ -75,11 +85,13 @@ func (m *Memory) logf(format string, args ...any) {
 	}
 }
 
-// Load reads the store and returns the facts that STILL hold — each one
-// re-observed through its independent channel. Stale facts are dropped. All IO
-// errors are swallowed: a missing or corrupt store simply yields no prior
-// knowledge, never a crash.
-func (m *Memory) Load() []Fact {
+// Load reads the store and returns the facts RELEVANT to objective, tagged so the
+// runtime re-validates them on use (§ validate-on-use). Facts left by an unrelated
+// previous objective are skipped — never loaded, never re-checked — so they neither
+// cost a syscall nor pollute the planner's context. An empty objective disables
+// scoping (load everything). All IO errors are swallowed: a missing or corrupt store
+// simply yields no prior knowledge, never a crash.
+func (m *Memory) Load(objective string) []Fact {
 	if m == nil {
 		return nil
 	}
@@ -91,22 +103,76 @@ func (m *Memory) Load() []Fact {
 	if json.Unmarshal(data, &recs) != nil {
 		return nil
 	}
-	var out []Fact
+	objTokens := significantTokens(objective)
+	var out, skipped int
+	var facts []Fact
 	for _, r := range recs {
 		a := Assertion{Type: r.Type, Pattern: r.Pattern, Channel: r.Channel}
 		if !independentChannel(a.Channel) {
 			continue // only re-checkable channels were ever persisted; ignore anything else
 		}
-		if !checkIndependentState(a) {
-			m.logf("MEMORY_DROP stale %s", assertionDesc(a))
-			continue // re-validation failed — never trust a stale claim (§8.3)
+		if !relevantToObjective(objTokens, r) {
+			skipped++
+			continue // an unrelated objective's fact: don't load OR re-validate it
 		}
-		out = append(out, Fact{Statement: r.Statement, SourceID: "MEMORY", Strength: StrengthStrong, assertion: a})
+		// Validate ON USE, not here: tag as MEMORY and let the precondition check /
+		// completion guard re-observe it the moment the run actually relies on it.
+		facts = append(facts, Fact{Statement: r.Statement, SourceID: memorySourceID, Strength: StrengthStrong, assertion: a})
+		out++
 	}
-	if len(out) > 0 {
-		m.logf("MEMORY_LOAD %d re-validated fact(s) from %s", len(out), m.Path)
+	if out > 0 || skipped > 0 {
+		m.logf("MEMORY_LOAD %d relevant fact(s) (skipped %d off-objective) from %s", out, skipped, m.Path)
+	}
+	return facts
+}
+
+// significantTokens lowercases s, splits it on any non-alphanumeric byte, and keeps
+// tokens of length >= 3 that are not generic filler (English connectives plus ADA's
+// own fact-rendering words like "verified"/"dir"). It is a deliberately small, fast
+// bag-of-words — enough to tell an "nginx" fact apart from an "/opt/ada-demo" one.
+func significantTokens(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if len(tok) >= 3 && !memoryStopwords[tok] {
+			out[tok] = true
+		}
 	}
 	return out
+}
+
+// relevantToObjective reports whether a stored fact pertains to the current
+// objective, by sharing at least one significant token with it. An empty objective
+// (no tokens) keeps everything, preserving callers that don't scope. This is what
+// stops a run from re-validating and re-injecting an unrelated previous objective's
+// facts (§ scope-to-objective).
+func relevantToObjective(objTokens map[string]bool, r memoryRecord) bool {
+	if len(objTokens) == 0 {
+		return true
+	}
+	for tok := range significantTokens(r.Statement + " " + r.Pattern) {
+		if objTokens[tok] {
+			return true
+		}
+	}
+	return false
+}
+
+// memoryStopwords are tokens too generic to signal relevance: common English filler,
+// frequent objective verbs, and the predicate / render words ADA bakes into every
+// fact statement ("verified: /x (dir)") — which would otherwise cross-match any two
+// facts. Discriminating nouns (nginx, zsh, a path component) are never in this set.
+var memoryStopwords = map[string]bool{
+	"the": true, "and": true, "for": true, "with": true, "that": true, "this": true,
+	"via": true, "are": true, "its": true, "not": true, "but": true, "all": true,
+	"any": true, "has": true, "have": true, "was": true, "will": true, "then": true,
+	"you": true, "your": true, "from": true, "into": true, "onto": true,
+	"ensure": true, "confirm": true, "verified": true, "exists": true, "exist": true,
+	"prove": true, "make": true, "set": true, "run": true, "install": true,
+	"installed": true, "equivalent": true, "target": true, "distro": true,
+	"dir": true, "directory": true, "file": true, "regular": true, "folder": true,
+	"nonempty": true, "empty": true, "mode": true, "contains": true,
 }
 
 // Save persists the durable subset of facts: STRONG facts on independent-state

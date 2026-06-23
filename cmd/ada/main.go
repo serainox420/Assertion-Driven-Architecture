@@ -124,7 +124,7 @@ func main() {
 	if mem != nil {
 		mem.Log = logf
 	}
-	seed := mem.Load() // re-validated strong facts (or none)
+	seed := mem.Load(*objective) // objective-scoped facts, validated on use (or none)
 
 	// Planning mode: decompose an open-ended objective into sub-goals and work
 	// them until the planner judges the objective satisfied.

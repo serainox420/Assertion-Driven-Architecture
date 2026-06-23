@@ -101,12 +101,24 @@ func (c *Coordinator) Facts() []Fact { return c.facts }
 func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 	var last PlanDecision
 	var roundFailures []string // sub-goals the most recent round could NOT achieve
+	stalledOnFailure := false  // a prior round hit a blocker and gained no new ground
 	for round := 1; round <= c.MaxRounds; round++ {
 		if ctx.Err() != nil {
 			return OutcomeExhausted, last
 		}
 
-		in := PlanInput{Objective: c.Objective, Environment: c.Environment, Facts: c.facts, Completed: c.completed, Failed: c.failed}
+		// The planner sees the verified facts AND last_error — the most recent blocker
+		// — so a failed round becomes a clue to repair, not just a dead end: it can
+		// insert a corrective sub-goal (refresh a stale package DB, free a port) before
+		// re-attempting the goal that failed (§ recover-from-blocker).
+		in := PlanInput{
+			Objective:   c.Objective,
+			Environment: c.Environment,
+			Facts:       c.facts,
+			Completed:   c.completed,
+			Failed:      c.failed,
+			LastError:   c.lastError,
+		}
 		planStart := time.Now()
 		dec, err := c.Planner.Plan(ctx, in, c.PlanTemp)
 		planMs := time.Since(planStart).Milliseconds()
@@ -132,6 +144,14 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 				c.logf("round=%d PLAN claimed done but %d sub-goal(s) unresolved (EXHAUSTED/FAILED) last round; NOT finished -> STABLE", round, len(roundFailures))
 				return OutcomeStable, dec
 			}
+			// Validate-on-use: a "done" may rest on facts carried from persistent
+			// memory, which are NOT re-checked at load. Re-observe them now; if any
+			// went stale, drop it and re-plan rather than declare a false FINISHED on a
+			// claim that no longer holds (§8.3).
+			if c.revalidateMemoryFacts() {
+				c.logf("round=%d PLAN claimed done but a memory fact failed re-validation; re-planning", round)
+				continue
+			}
 			return OutcomeFinished, dec
 		}
 		if len(dec.Subgoals) == 0 {
@@ -141,6 +161,7 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 
 		startFacts := len(c.facts)
 		roundFailures = nil
+		failed := false
 		for i, sg := range dec.Subgoals {
 			if ctx.Err() != nil {
 				return OutcomeExhausted, last
@@ -154,21 +175,64 @@ func (c *Coordinator) Run(ctx context.Context) (Outcome, PlanDecision) {
 			case OutcomeExhausted, OutcomeFailed:
 				c.failed = append(c.failed, sg)
 				roundFailures = append(roundFailures, sg)
+				failed = true
 			default:
 				c.completed = append(c.completed, sg)
 			}
 			c.logf("round=%d goal=%d %s %q", round, i+1, outcome, sg)
+			if failed {
+				// Sub-goals are ORDERED, and the ones after a blocker usually DEPEND on
+				// it (you cannot enable/start nginx if the install failed). Halt the
+				// round and re-plan from the blocker — "stop, work out why it failed,
+				// try a new approach" — instead of burning the budget on dependents
+				// that cannot pass (§ recover-from-blocker).
+				c.logf("round=%d goal=%d BLOCKED the round; halting to re-plan from the failure", round, i+1)
+				break
+			}
 		}
 
-		// If a whole round of sub-goals produced no new verified ground, we are not
-		// converging — stop rather than re-plan the same dead strategy forever.
-		if len(c.facts) == startFacts {
-			c.logf("round=%d STUCK: a full round produced no new verified facts", round)
+		switch {
+		case len(c.facts) > startFacts:
+			// Gained verified ground this round — keep going (re-plan), even if a later
+			// sub-goal was blocked: progress means the strategy is still moving.
+			stalledOnFailure = false
+		case failed:
+			// No new facts AND a blocker. Give the planner ONE informed re-plan against
+			// last_error; if the very next round ALSO stalls on a failure, it has found
+			// no way through — stop honestly rather than spin the round budget.
+			if stalledOnFailure {
+				c.logf("round=%d STUCK: re-plan after the blocker still produced no progress -> STABLE", round)
+				return OutcomeStable, last
+			}
+			stalledOnFailure = true
+		default:
+			// No new facts and no failure: the planner is re-proving settled ground.
+			c.logf("round=%d STUCK: a full round produced no new verified facts -> STABLE", round)
 			return OutcomeStable, last
 		}
 	}
 	c.logf("ROUND_BUDGET exhausted after %d rounds", c.MaxRounds)
 	return OutcomeExhausted, last
+}
+
+// revalidateMemoryFacts re-observes every fact carried from persistent memory and
+// drops any that no longer holds, returning true if at least one was dropped. This
+// is the "validate on use" safety net at the completion boundary: memory facts are
+// not re-checked at load (so an unrelated previous run's facts cost no stat), so a
+// planner "done" that leans on them must re-observe them before we accept FINISHED —
+// preserving the §8.3 guarantee that a stale claim is never trusted on faith.
+func (c *Coordinator) revalidateMemoryFacts() (dropped bool) {
+	kept := c.facts[:0:0] // new backing array; don't alias the live slice
+	for _, f := range c.facts {
+		if f.SourceID == memorySourceID && !checkIndependentState(f.assertion) {
+			c.logf("MEMORY_DROP stale %s", assertionDesc(f.assertion))
+			dropped = true
+			continue
+		}
+		kept = append(kept, f)
+	}
+	c.facts = kept
+	return dropped
 }
 
 // runSubgoal executes a single sub-goal through the flat loop, seeded with the

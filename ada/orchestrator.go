@@ -382,9 +382,17 @@ func (o *Orchestrator) preconditionProven(p Assertion) bool {
 	}
 	key := assertionKey(p)
 	for _, f := range o.Snapshot.EstablishedFacts {
-		if f.Strength == StrengthStrong && assertionKey(f.assertion) == key {
-			return true
+		if f.Strength != StrengthStrong || assertionKey(f.assertion) != key {
+			continue
 		}
+		// A fact proven THIS run is trusted directly — we just observed it. A fact
+		// carried from persistent memory is validated ON USE: re-observe it now,
+		// exactly when we lean on it, rather than re-stat'ing the whole store at
+		// startup. A stale memory fact is not proof (and not trusted).
+		if f.SourceID == memorySourceID && !checkIndependentState(f.assertion) {
+			continue
+		}
+		return true
 	}
 	return false
 }

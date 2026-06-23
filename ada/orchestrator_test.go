@@ -3,6 +3,7 @@ package ada
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -359,4 +360,49 @@ func TestPreconditionUnmetWithoutFact(t *testing.T) {
 	if outcome := orch.Run(context.Background()); outcome == OutcomeFinished {
 		t.Fatal("an unmet precondition with no proving fact must NOT reach FINISHED")
 	}
+}
+
+// TestMemoryFactValidatedOnUse: a fact carried from persistent memory (SourceID
+// MEMORY) is re-observed the moment it is leaned on as a precondition — unlike a
+// fact proven THIS run, which is trusted directly. A still-true memory fact
+// short-circuits the precondition; a stale one (its path now gone) does not, so the
+// guard is enforced and the command does not run on a false assumption.
+func TestMemoryFactValidatedOnUse(t *testing.T) {
+	dir := t.TempDir()
+	present := filepath.Join(dir, "present")
+	if err := os.WriteFile(present, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(dir, "absent") // a memory fact will CLAIM this exists
+
+	task := func(precond string) Task {
+		return Task{
+			ID: "act", Command: "true", Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+			Preconditions: []Assertion{{Type: "fs", Pattern: precond, Channel: ChannelFS}},
+			Assertion:     Assertion{Type: "exit", Pattern: "0", Channel: ChannelExitCode},
+		}
+	}
+	memFact := func(path string) Fact {
+		return Fact{Statement: "mem " + path, SourceID: memorySourceID, Strength: StrengthStrong,
+			assertion: Assertion{Type: "fs", Pattern: path, Channel: ChannelFS}}
+	}
+
+	t.Run("still-true memory fact short-circuits", func(t *testing.T) {
+		llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) { return task(present), nil }}
+		o := NewOrchestrator("x", llm, NewRuntime())
+		o.Seed([]Fact{memFact(present)})
+		if got := o.Run(context.Background()); got != OutcomeFinished {
+			t.Fatalf("a valid memory fact should satisfy the precondition (FINISHED), got %s", got)
+		}
+	})
+
+	t.Run("stale memory fact is not trusted", func(t *testing.T) {
+		llm := &MockLLM{Respond: func(StateSnapshot) (Task, error) { return task(absent), nil }}
+		o := NewOrchestrator("x", llm, NewRuntime())
+		o.MaxStuck = 2 // the precondition can never hold; terminate quickly
+		o.Seed([]Fact{memFact(absent)})
+		if got := o.Run(context.Background()); got == OutcomeFinished {
+			t.Fatal("a stale memory fact must NOT satisfy a precondition (validate on use)")
+		}
+	})
 }
