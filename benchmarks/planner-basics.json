@@ -1,0 +1,37 @@
+{
+  "name": "planner-basics",
+  "description": "Five progressively harder planning-mode objectives. Each one is observable purely on the local filesystem (no network, no extra packages), so the suite is a fast, deterministic indicator of how well the planner decomposes a goal, carries verified facts forward, and proves completion through independent state checks. Tasks build from a single file up to a multi-file workspace that genuinely needs decomposition.",
+  "mode": "plan",
+  "tasks": [
+    {
+      "name": "create-ready-file",
+      "objective": "create the file /tmp/ada-bench-planner/ready and prove the file exists",
+      "max_rounds": 3,
+      "goal_steps": 8
+    },
+    {
+      "name": "capture-kernel-release",
+      "objective": "write the kernel release (the output of 'uname -r') into /tmp/ada-bench-planner/kernel.txt and prove the file exists and is non-empty",
+      "max_rounds": 4,
+      "goal_steps": 10
+    },
+    {
+      "name": "config-with-mode",
+      "objective": "create /tmp/ada-bench-planner/app/config.yaml containing the line 'mode: prod' with file mode 0644, and prove the file exists with that content and mode",
+      "max_rounds": 5,
+      "goal_steps": 12
+    },
+    {
+      "name": "two-file-workspace",
+      "objective": "set up a workspace under /tmp/ada-bench-planner/ws containing a settings.ini file with the line 'enabled=true' and a VERSION file containing '1.0.0', and prove both files exist with the expected content",
+      "max_rounds": 6,
+      "goal_steps": 14
+    },
+    {
+      "name": "provision-app-tree",
+      "objective": "provision a small application workspace at /tmp/ada-bench-planner/srv: create the directories conf and data, write conf/app.yaml containing 'name: ada-demo' and 'mode: prod', record the current user into data/owner.txt, and prove that both directories exist, the config contains both lines, and the owner file is non-empty",
+      "max_rounds": 8,
+      "goal_steps": 18
+    }
+  ]
+}

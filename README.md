@@ -39,9 +39,10 @@ bin/ada --help    # the full command reference
 ```
 
 The TUI is self-sufficient — **everything** can be done from it: run an objective
-and watch the loop stream live, drive a planning run, switch/pull/remove Ollama
-models, edit every setting (host, model, decoder params, budgets, system &
-planner prompts), and curate a **toolbox** of commands offered to the model. It
+and watch the loop stream live, drive a planning run, run a **benchmark suite** of
+objectives back-to-back, switch/pull/remove Ollama models, edit every setting
+(host, model, decoder params, budgets, debug logging, system & planner prompts),
+and curate a **toolbox** of commands offered to the model. It
 renders colorized logs, syntax-highlighted JSON, and styled markdown throughout.
 
 ```
@@ -62,6 +63,7 @@ renders colorized logs, syntax-highlighted JSON, and styled markdown throughout.
 |---------|------|
 | `ada run "<objective>"` | drive one objective through the flat ADA loop (live, pretty) |
 | `ada plan "<objective>"` | planning mode: decompose → execute → re-plan |
+| `ada benchmark [<name>]` | list, or run, a suite of objectives from `benchmarks/` (see [Benchmark suites](#benchmark-suites)) |
 | `ada demo [--plan]` | offline demo, no model server needed |
 | `ada model list \| pull <tag> \| show <tag> \| rm <tag> \| use <tag>` | manage Ollama models |
 | `ada serve` | check / start the Ollama server |
@@ -384,6 +386,59 @@ Design choices (flat, re-plannable — not a rigid tree, per §0):
   verified facts ends as `STABLE` (stuck) rather than looping forever.
 - Same model can plan and execute, or split a large "driver" planner from a fast
   "worker" executor (§1.5).
+
+## Debug logs
+
+Turn on **debug mode** to capture the full anatomy of a run — model params and
+limits, every step's task JSON, the raw LLM response, decoded stdout/stderr,
+anomalies, established facts, planner calls, and a final summary. Enable it with
+`ada config set debug_enabled true` (or `ADA_DEBUG=1`, or `ada_agent -debug`);
+the per-section toggles live under **Settings ▸ Debug** in the TUI.
+
+By default debug mode writes a **single combined report** per run — one
+self-contained `run-<id>.md` file under `$XDG_STATE_HOME/ada/debug` with every
+enabled section. It's the easiest thing to read, attach to an issue, or diff.
+
+```bash
+ada config set debug_enabled true     # combined report is the default
+ada run "create /tmp/app/ready and prove the file exists"
+# → debug: report ~/.local/state/ada/debug/run-20260623T100527-67d053.md
+```
+
+Prefer the legacy layout — a per-run **folder** with one file per channel
+(`tasks.jsonl`, `anomalies.jsonl`, `facts.jsonl`, `planner.jsonl`,
+`meta.json`, `summary.json`)? Turn the single file off:
+
+```bash
+ada config set debug_combined false    # or: ada_agent -debug -debug-combined=false
+```
+
+## Benchmark suites
+
+A **benchmark** is a list of objectives, defined as a JSON config in the
+`benchmarks/` folder, that ADA runs one after another — the fast, repeatable way
+to gauge how well it handles a spread of common situations. Pick one in the TUI
+under **Run ▸ Benchmark**, or from the CLI:
+
+```bash
+ada benchmark                 # list available suites
+ada benchmark planner-basics  # run every task in order; prints an N/M scorecard
+```
+
+The shipped [`benchmarks/planner-basics.json`](benchmarks/planner-basics.json)
+is a good first indicator: five progressively harder planning-mode objectives,
+each observable purely on the local filesystem (no network, no extra packages),
+building from a single file up to a small multi-file workspace that genuinely
+needs decomposition. A task passes when it reaches `FINISHED` or `STABLE`.
+
+When debug logging is on, a suite run creates a single directory prefixed
+`benchmark-` (instead of the per-run `run-`) and drops **one consolidated report
+per task** inside it (`01-<task>.md`, `02-<task>.md`, …), each with all enabled
+debug logging in one file. See [`benchmarks/README.md`](benchmarks/README.md)
+for the config format.
+
+> The graded `benchmark/` (singular) `objectives.tsv` + `make bench` workflow is
+> unchanged; the suites under `benchmarks/` are the runtime-native counterpart.
 
 ## Test
 

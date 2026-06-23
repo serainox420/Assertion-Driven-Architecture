@@ -40,10 +40,16 @@ func executeRun(ctx context.Context, cfg *Config, client *Client, objective stri
 	dbg, _ := ada.NewDebugSession(cfg.ToDebugConfig(), time.Now())
 	defer dbg.Close()
 	if dbg != nil {
-		logf("debug: run dir %s", dbg.Dir())
+		logf("debug: report %s", dbg.Location())
 		client.DebugHook = dbg.CaptureRaw
 	}
+	return runObjective(ctx, cfg, client, objective, planMode, dbg, logf)
+}
 
+// runObjective drives one objective with a caller-supplied debug session (which
+// may be nil). executeRun creates a per-run session; the benchmark runner passes
+// a per-task consolidated-report session so every task lands in its own file.
+func runObjective(ctx context.Context, cfg *Config, client *Client, objective string, planMode bool, dbg *ada.DebugSession, logf func(string, ...any)) RunResult {
 	// Re-validated persistent memory (§5.3): learn durable facts once, reuse next run.
 	mem := ada.OpenMemory(cfg.MemoryPath(), cfg.Memory)
 	if mem != nil {

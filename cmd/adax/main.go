@@ -70,6 +70,8 @@ func main() {
 		os.Exit(cmdDoctor(cfg, rest))
 	case "bench":
 		os.Exit(cmdScript(cfg, "bench", rest))
+	case "benchmark", "benchmarks":
+		os.Exit(cmdBenchmark(cfg, rest))
 	case "build", "test", "fmt", "deps", "package", "sync", "create-models":
 		os.Exit(cmdScript(cfg, cmd, rest))
 	case "up", "shell", "stop", "start", "down", "rebuild", "refresh", "clean-sandbox":
@@ -100,6 +102,7 @@ const helpMarkdown = "" +
 	"|---|---|\n" +
 	"| `ada run \"<objective>\"` | drive one objective through the flat ADA loop |\n" +
 	"| `ada plan \"<objective>\"` | planning mode: decompose → execute → re-plan |\n" +
+	"| `ada benchmark [<name>]` | list / run a suite of objectives from `benchmarks/` |\n" +
 	"| `ada demo [--plan]` | offline demo, no model server needed |\n" +
 	"| `ada tui` | open the full-screen interactive interface |\n\n" +
 	"## Models (Ollama)\n" +
