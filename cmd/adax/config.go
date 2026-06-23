@@ -68,6 +68,7 @@ type Config struct {
 	// ── Debug log mode ────────────────────────────────────────────────────────
 	DebugEnabled      bool   `json:"debug_enabled"`
 	DebugDir          string `json:"debug_dir,omitempty"`
+	DebugCombined     bool   `json:"debug_combined"`
 	DebugLogMeta      bool   `json:"debug_log_meta"`
 	DebugLogTasks     bool   `json:"debug_log_tasks"`
 	DebugLogRawLLM    bool   `json:"debug_log_raw_llm"`
@@ -114,6 +115,7 @@ func DefaultConfig() *Config {
 		Markdown:     true,
 
 		DebugEnabled:      false,
+		DebugCombined:     true,
 		DebugLogMeta:      true,
 		DebugLogTasks:     true,
 		DebugLogRawLLM:    true,
@@ -199,6 +201,7 @@ func (c *Config) applyEnv() {
 	envBool(&c.Markdown, "ADA_MARKDOWN")
 	envBool(&c.DebugEnabled, "ADA_DEBUG")
 	envStr(&c.DebugDir, "ADA_DEBUG_DIR")
+	envBool(&c.DebugCombined, "ADA_DEBUG_COMBINED")
 
 	if os.Getenv("NO_COLOR") != "" {
 		c.Color = "never"
@@ -345,6 +348,8 @@ func (c *Config) SetField(key, value string) error {
 		return setBool(&c.DebugEnabled, value)
 	case "debug_dir":
 		c.DebugDir = value
+	case "debug_combined":
+		return setBool(&c.DebugCombined, value)
 	case "debug_log_meta":
 		return setBool(&c.DebugLogMeta, value)
 	case "debug_log_tasks":
@@ -401,17 +406,18 @@ func (c *Config) Fields() []ConfigField {
 // DebugFields returns the editable debug-mode config keys with current values.
 func (c *Config) DebugFields() []ConfigField {
 	return []ConfigField{
-		{"debug_enabled", btoa(c.DebugEnabled), "Record full run details to a per-run folder"},
+		{"debug_enabled", btoa(c.DebugEnabled), "Record full run details for debugging"},
 		{"debug_dir", c.DebugDir, "Override debug folder (blank → $XDG_STATE_HOME/ada/debug)"},
-		{"debug_log_meta", btoa(c.DebugLogMeta), "meta.json — model params, limits, all settings"},
-		{"debug_log_tasks", btoa(c.DebugLogTasks), "tasks.jsonl — full task JSON + result per step"},
-		{"debug_log_raw_llm", btoa(c.DebugLogRawLLM), "Include raw LLM response in tasks.jsonl"},
-		{"debug_log_stdout", btoa(c.DebugLogStdout), "Include decoded stdout in tasks.jsonl"},
-		{"debug_log_stderr", btoa(c.DebugLogStderr), "Include decoded stderr in tasks.jsonl"},
-		{"debug_log_anomalies", btoa(c.DebugLogAnomalies), "anomalies.jsonl — every anomaly payload"},
-		{"debug_log_facts", btoa(c.DebugLogFacts), "facts.jsonl — every fact as established"},
-		{"debug_log_planner", btoa(c.DebugLogPlanner), "planner.jsonl — every planner call (plan mode)"},
-		{"debug_log_summary", btoa(c.DebugLogSummary), "summary.json — final outcome + all facts"},
+		{"debug_combined", btoa(c.DebugCombined), "Single combined report file per run (off → folder of files)"},
+		{"debug_log_meta", btoa(c.DebugLogMeta), "meta — model params, limits, all settings"},
+		{"debug_log_tasks", btoa(c.DebugLogTasks), "tasks — full task JSON + result per step"},
+		{"debug_log_raw_llm", btoa(c.DebugLogRawLLM), "Include raw LLM response with each step"},
+		{"debug_log_stdout", btoa(c.DebugLogStdout), "Include decoded stdout with each step"},
+		{"debug_log_stderr", btoa(c.DebugLogStderr), "Include decoded stderr with each step"},
+		{"debug_log_anomalies", btoa(c.DebugLogAnomalies), "anomalies — every anomaly payload"},
+		{"debug_log_facts", btoa(c.DebugLogFacts), "facts — every fact as established"},
+		{"debug_log_planner", btoa(c.DebugLogPlanner), "planner — every planner call (plan mode)"},
+		{"debug_log_summary", btoa(c.DebugLogSummary), "summary — final outcome + all facts"},
 	}
 }
 
@@ -420,6 +426,7 @@ func (c *Config) ToDebugConfig() ada.DebugConfig {
 	return ada.DebugConfig{
 		Enabled:      c.DebugEnabled,
 		Dir:          c.DebugDir,
+		Combined:     c.DebugCombined,
 		LogMeta:      c.DebugLogMeta,
 		LogTasks:     c.DebugLogTasks,
 		LogRawLLM:    c.DebugLogRawLLM,

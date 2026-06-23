@@ -51,9 +51,10 @@ func main() {
 		// Debug log mode: produces a per-run folder with structured logs of every
 		// step, task JSON, raw LLM response, anomalies, facts, and planner calls.
 		// Sub-settings are loaded from -debug-config (JSON); -debug-dir overrides Dir.
-		debugMode   = flag.Bool("debug", false, "enable debug log mode (records full run details to a per-run folder)")
-		debugDir    = flag.String("debug-dir", "", "override the debug log folder (default: $XDG_STATE_HOME/ada/debug)")
-		debugConfig = flag.String("debug-config", "", "JSON file with debug sub-settings (what to log); uses all-on defaults if absent")
+		debugMode     = flag.Bool("debug", false, "enable debug log mode (records full run details for debugging)")
+		debugDir      = flag.String("debug-dir", "", "override the debug log folder (default: $XDG_STATE_HOME/ada/debug)")
+		debugConfig   = flag.String("debug-config", "", "JSON file with debug sub-settings (what to log); uses all-on defaults if absent")
+		debugCombined = flag.Bool("debug-combined", true, "write a single combined report file per run (false → a folder of per-channel files)")
 	)
 	flag.Parse()
 
@@ -89,6 +90,13 @@ func main() {
 		if *debugDir != "" {
 			cfg.Dir = *debugDir
 		}
+		// Only let the -debug-combined flag override the (file/default) value when
+		// the operator actually passed it, so -debug-config keeps precedence.
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "debug-combined" {
+				cfg.Combined = *debugCombined
+			}
+		})
 		var err error
 		dbg, err = ada.NewDebugSession(cfg, runStart)
 		if err != nil {
@@ -96,7 +104,7 @@ func main() {
 			os.Exit(2)
 		}
 		defer dbg.Close()
-		fmt.Fprintf(os.Stderr, "ada debug: run dir %s\n", dbg.Dir())
+		fmt.Fprintf(os.Stderr, "ada debug: report %s\n", dbg.Location())
 	}
 
 	// Ctrl-C produces a clean, observable shutdown.

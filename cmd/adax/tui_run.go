@@ -5,8 +5,59 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// benchItem is a benchmark suite shown in the run › benchmark picker.
+type benchItem struct{ b Benchmark }
+
+func (i benchItem) Title() string { return i.b.Name }
+func (i benchItem) Description() string {
+	mode := "plan"
+	if strings.EqualFold(strings.TrimSpace(i.b.Mode), "flat") {
+		mode = "flat"
+	}
+	return theme.Val.Render(fmt.Sprintf("%d tasks · %s", len(i.b.Tasks), mode)) +
+		theme.Dim.Render("  — "+i.b.Description)
+}
+func (i benchItem) FilterValue() string { return i.b.Name }
+
+// rebuildBenchmarks reloads the benchmark suites from the benchmarks/ folder.
+func (m *tuiModel) rebuildBenchmarks() {
+	suites, _ := ListBenchmarks(benchmarksDir())
+	items := make([]list.Item, 0, len(suites))
+	for _, b := range suites {
+		items = append(items, benchItem{b})
+	}
+	m.benchList.SetItems(items)
+}
+
+// startBenchmark drives a whole suite in the background, streaming each task's
+// events live and finishing with a benchDoneMsg scorecard.
+func (m *tuiModel) startBenchmark(b Benchmark) tea.Cmd {
+	m.runState = rsActive
+	m.runResult = nil
+	m.benchResult = nil
+	m.runLog = m.runLog[:0]
+	m.runVP.SetContent("")
+
+	ch := make(chan tea.Msg, 256)
+	m.events = ch
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelRun = cancel
+
+	cfg, client := m.cfg, m.client
+	go func() {
+		logf := func(format string, args ...any) {
+			ch <- logLineMsg(renderEvent(fmt.Sprintf(format, args...)))
+		}
+		res := runBenchmark(ctx, cfg, client, b, logf)
+		ch <- benchDoneMsg(res)
+	}()
+
+	return tea.Batch(m.spin.Tick, waitForEvent(ch))
+}
 
 // startRun spins up a background goroutine that drives the objective and streams
 // every structured event back over m.events as a tea.Msg, so the loop renders live.
@@ -59,6 +110,16 @@ func (m *tuiModel) updateRun(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runVP.GotoBottom()
 		return m, nil
 
+	case benchDoneMsg:
+		res := BenchmarkResult(msg)
+		m.benchResult = &res
+		m.runState = rsDone
+		m.cancelRun = nil
+		m.runLog = append(m.runLog, "", renderBenchmarkSummary(res))
+		m.runVP.SetContent(strings.Join(m.runLog, "\n"))
+		m.runVP.GotoBottom()
+		return m, nil
+
 	case tea.KeyMsg:
 		switch m.runState {
 		case rsTypeSelect:
@@ -69,6 +130,11 @@ func (m *tuiModel) updateRun(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				if it, ok := m.runTypeList.SelectedItem().(menuItem); ok {
 					m.runMode = it.id
+					if it.id == "bench" {
+						m.rebuildBenchmarks()
+						m.runState = rsBenchSelect
+						return m, nil
+					}
 					m.runState = rsInput
 					m.runInput.SetValue("")
 					return m, m.runInput.Focus()
@@ -76,6 +142,21 @@ func (m *tuiModel) updateRun(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			var cmd tea.Cmd
 			m.runTypeList, cmd = m.runTypeList.Update(msg)
+			return m, cmd
+
+		case rsBenchSelect:
+			switch msg.String() {
+			case "esc":
+				m.runState = rsTypeSelect
+				return m, nil
+			case "enter":
+				if it, ok := m.benchList.SelectedItem().(benchItem); ok {
+					return m, m.startBenchmark(it.b)
+				}
+				return m, m.setFlash(theme.Warning.Render("no benchmark configs in benchmarks/"))
+			}
+			var cmd tea.Cmd
+			m.benchList, cmd = m.benchList.Update(msg)
 			return m, cmd
 
 		case rsInput:
@@ -128,6 +209,16 @@ func (m *tuiModel) viewRun() (string, string) {
 	case rsTypeSelect:
 		return m.runTypeList.View(), "↑/↓ move · enter select · esc back"
 
+	case rsBenchSelect:
+		if len(m.benchList.Items()) == 0 {
+			title := theme.Title.Render("Benchmarks")
+			hint := theme.Dim.Render("No benchmark configs found in " + benchmarksDir() + ".\n" +
+				"Add a *.json suite (see benchmarks/planner-basics.json) and come back.")
+			return title + "\n\n" + hint, "esc back"
+		}
+		title := theme.Title.Render("Benchmarks") + theme.Dim.Render("  ·  "+benchmarksDir())
+		return title + "\n\n" + m.benchList.View(), "↑/↓ move · enter run · esc back"
+
 	case rsInput:
 		mode := "flat loop"
 		if m.runMode == "plan" {
@@ -143,7 +234,14 @@ func (m *tuiModel) viewRun() (string, string) {
 	default:
 		head := theme.Title.Render("Run") + theme.Dim.Render("  ·  "+m.cfg.Model)
 		if m.runState == rsActive {
-			head = m.spin.View() + " " + theme.Title.Render("running") + theme.Dim.Render("  ·  "+m.cfg.Model+"  ·  esc to stop")
+			label := "running"
+			if m.runMode == "bench" {
+				label = "benchmarking"
+			}
+			head = m.spin.View() + " " + theme.Title.Render(label) + theme.Dim.Render("  ·  "+m.cfg.Model+"  ·  esc to stop")
+		} else if m.benchResult != nil {
+			head = theme.Title.Render(fmt.Sprintf("● %d/%d passed", m.benchResult.Passed, m.benchResult.Total)) +
+				theme.Dim.Render("  ·  "+m.cfg.Model)
 		} else if m.runResult != nil && m.runResult.Err == nil {
 			head = theme.outcomeStyle(string(m.runResult.Outcome)).Render("● "+string(m.runResult.Outcome)) +
 				theme.Dim.Render("  ·  "+m.cfg.Model)

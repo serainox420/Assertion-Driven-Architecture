@@ -60,8 +60,9 @@ func (s screen) crumb() string {
 type runState int
 
 const (
-	rsTypeSelect runState = iota // choose flat vs plan
-	rsInput                      // collecting the objective
+	rsTypeSelect  runState = iota // choose flat / plan / benchmark
+	rsInput                       // collecting the objective
+	rsBenchSelect                 // choosing a benchmark suite to run
 	rsActive
 	rsDone
 )
@@ -89,11 +90,13 @@ type tuiModel struct {
 	// run
 	runTypeList list.Model
 	runInput    textinput.Model
-	runMode     string // "flat" | "plan"
+	runMode     string // "flat" | "plan" | "bench"
 	runState    runState
 	runVP       viewport.Model
 	runLog      []string
 	runResult   *RunResult
+	benchList   list.Model
+	benchResult *BenchmarkResult
 	events      chan tea.Msg
 	cancelRun   context.CancelFunc
 
@@ -165,6 +168,7 @@ func newTUIModel(cfg *Config) *tuiModel {
 	m.runTypeList = newList([]list.Item{
 		menuItem{"Flat loop", "One objective, deterministic THINK→ACT→ASSERT", "flat"},
 		menuItem{"Planning mode", "Decompose an open-ended objective into verified sub-goals", "plan"},
+		menuItem{"Benchmark", "Run a suite of objectives from benchmarks/ one after another", "bench"},
 	})
 
 	m.runInput = textinput.New()
@@ -180,6 +184,7 @@ func newTUIModel(cfg *Config) *tuiModel {
 
 	m.settings = newList(nil)
 	m.debugSettings = newList(nil)
+	m.benchList = newList(nil)
 	m.models = newList(nil)
 	m.tools = newList(nil)
 	m.runVP = viewport.New(78, 18)
@@ -212,6 +217,7 @@ func (m *tuiModel) Init() tea.Cmd {
 
 type logLineMsg string
 type runDoneMsg RunResult
+type benchDoneMsg BenchmarkResult
 type statusMsg struct {
 	ok   bool
 	text string
@@ -342,6 +348,7 @@ func (m *tuiModel) resize(w, h int) {
 	m.settings.SetSize(w-2, bodyH)
 	m.debugSettings.SetSize(w-2, bodyH)
 	m.runTypeList.SetSize(w-2, bodyH)
+	m.benchList.SetSize(w-2, bodyH)
 	m.models.SetSize(w-2, bodyH)
 	m.tools.SetSize(w-2, bodyH)
 	m.runVP.Width, m.runVP.Height = w-2, bodyH-2

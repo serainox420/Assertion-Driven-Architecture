@@ -314,6 +314,29 @@ func renderSummary(label string, outcome ada.Outcome, planReason string, s ada.S
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// renderBenchmarkSummary builds the end-of-suite scorecard: per-task outcomes
+// and the aggregate pass count, plus where the per-task reports landed.
+func renderBenchmarkSummary(res BenchmarkResult) string {
+	var b strings.Builder
+	bar := theme.Dim.Render(strings.Repeat("─", 48))
+	b.WriteString("\n" + bar + "\n")
+	b.WriteString(theme.Title.Render("BENCHMARK COMPLETE") + "  " +
+		theme.Key.Render(fmt.Sprintf("%d/%d passed", res.Passed, res.Total)) + "\n")
+	b.WriteString(theme.Dim.Render("suite: ") + res.Name + "\n")
+	for _, t := range res.Tasks {
+		mark := theme.OK.Render("✓")
+		if !benchmarkPass(t.Outcome) {
+			mark = theme.Bad.Render("✗")
+		}
+		b.WriteString(fmt.Sprintf("  %s %s %s\n", mark,
+			padRight(t.Name, 24), theme.outcomeStyle(string(t.Outcome)).Render(string(t.Outcome))))
+	}
+	if res.LogDir != "" {
+		b.WriteString(theme.Dim.Render("reports: ") + res.LogDir + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // outcomeHint returns the human "what just happened / what to try" note printed
 // after a non-FINISHED run, matching the original CLI's guidance.
 func outcomeHint(outcome ada.Outcome) string {
