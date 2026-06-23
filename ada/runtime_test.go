@@ -306,6 +306,17 @@ func TestClassifyFailure(t *testing.T) {
 	if classifyFailure(1, []byte("some other thing")) != ClassTransient {
 		t.Error("default should be transient")
 	}
+	// systemd/D-Bus unavailable (container/chroot with no init): a hard environment
+	// fact, NOT a transient hiccup — retrying systemctl can never succeed. This is the
+	// nginx-on-a-non-booted-host failure from the debug logs.
+	notBooted := []byte("System has not been booted with systemd as init system (PID 1). Can't operate.\n" +
+		"Failed to connect to system scope bus via local transport: Host is down")
+	if classifyFailure(1, notBooted) != ClassEnvDeterministic {
+		t.Error("systemd-not-booted should be env_deterministic, not transient")
+	}
+	if classifyFailure(1, []byte("Failed to connect to bus: No such file or directory")) != ClassEnvDeterministic {
+		t.Error("D-Bus connect failure should be env_deterministic")
+	}
 }
 
 func TestTimeoutIsTransient(t *testing.T) {
