@@ -326,17 +326,19 @@ func (s *DebugSession) LogAnomaly(step int, goal string, a *AnomalyPayload) {
 		return
 	}
 	entry := map[string]any{
-		"ts":            time.Now().UTC().Format(time.RFC3339Nano),
-		"step":          step,
-		"goal":          goal,
-		"task_id":       a.FailedTaskID,
-		"failure_class": a.FailureClass,
-		"exit_code":     a.ExitCode,
-		"expected":      a.Expected,
-		"attempts":      a.Attempts,
-		"directive":     a.Directive,
-		"stdout":        debugDecodeB64(a.ActualOutB64),
-		"stderr":        debugDecodeB64(a.ActualErrB64),
+		"ts":             time.Now().UTC().Format(time.RFC3339Nano),
+		"step":           step,
+		"goal":           goal,
+		"task_id":        a.FailedTaskID,
+		"failure_class":  a.FailureClass,
+		"exit_code":      a.ExitCode,
+		"expected":       a.Expected,
+		"attempts":       a.Attempts,
+		"directive":      a.Directive,
+		"failed_command": a.Command,
+		"already_tried":  a.Tried,
+		"stdout":         debugDecodeB64(a.ActualOutB64),
+		"stderr":         debugDecodeB64(a.ActualErrB64),
 	}
 	s.mu.Lock()
 	if s.combined {
