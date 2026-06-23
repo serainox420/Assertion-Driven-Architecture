@@ -464,6 +464,60 @@ func countString(list []string, s string) int {
 	return n
 }
 
+// TestCoordinatorExhaustedWithProgressIsNotABlocker: a sub-goal whose executor
+// PROVED new state (recorded a fact) but then ran out of budget without a clean
+// terminal — the model satisfied it in one step but never set final:true — must be
+// treated as PROGRESS, not a round-halting failure. Otherwise the coordinator
+// re-lists a sub-goal it already achieved and halts every round on it, so the
+// dependent sub-goals never run (the "/var/www/html is writable" dead-end: the
+// writable fact recorded, yet the goal stuck in failed_subgoals and the run died
+// on step one). The next sub-goal must still run, and the objective complete.
+func TestCoordinatorExhaustedWithProgressIsNotABlocker(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	has := func(facts []Fact, p string) bool {
+		for _, f := range facts {
+			if strings.Contains(f.Statement, p) {
+				return true
+			}
+		}
+		return false
+	}
+	planFn := func(in PlanInput) (PlanDecision, error) {
+		if has(in.Facts, b) {
+			return PlanDecision{Done: true, Reason: "b present"}, nil
+		}
+		return PlanDecision{Reason: "go", Subgoals: []string{"make a at " + a, "make b at " + b}}, nil
+	}
+	respond := func(s StateSnapshot) (Task, error) {
+		if strings.Contains(s.Objective, "make a") {
+			// Proves a (records a fact) but NEVER sets final and is not idempotent-
+			// terminal, so with stall disabled the orchestrator EXHAUSTS its step
+			// budget AFTER making verified progress — exactly the writable scenario.
+			return Task{ID: "a", Command: "touch " + a, Mode: ModeBlocking, TimeoutSec: 5,
+				Assertion: Assertion{Type: "fs", Pattern: a, Channel: ChannelFS}}, nil
+		}
+		return Task{ID: "b", Command: "touch " + b, Mode: ModeBlocking, TimeoutSec: 5, Final: true,
+			Assertion: Assertion{Type: "fs", Pattern: b, Channel: ChannelFS}}, nil
+	}
+	llm := &MockLLM{Respond: respond, PlanFn: planFn}
+	coord := NewCoordinator("a then b", llm, llm, NewRuntime())
+	coord.GoalSteps = 3   // small, so "make a" exhausts soon after proving a
+	coord.StallBudget = 0 // disable the stall guard so the sub-goal EXHAUSTS (not STABLE)
+	coord.MaxRounds = 4
+
+	outcome, _ := coord.Run(context.Background())
+	if !has(coord.Facts(), a) {
+		t.Error("fact a should have been recorded")
+	}
+	if !has(coord.Facts(), b) {
+		t.Fatal("sub-goal b must still run after a made progress but exhausted — the round must NOT halt")
+	}
+	if outcome != OutcomeFinished {
+		t.Errorf("expected FINISHED once b is proven, got %s", outcome)
+	}
+}
+
 // TestCoordinatorRevalidatesMemoryAtCompletion: a planner "done" resting on a fact
 // carried from memory must be re-validated before FINISHED is accepted. The seeded
 // memory fact is stale (its file does not exist), so the first "done" is rejected,
