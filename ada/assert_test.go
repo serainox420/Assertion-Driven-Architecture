@@ -3,6 +3,7 @@ package ada
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -120,6 +121,58 @@ func TestCheckFSToleratesPredicateNotations(t *testing.T) {
 		if got := checkFS(c.pattern); got != c.want {
 			t.Errorf("checkFS(%q) = %v; want %v", c.pattern, got, c.want)
 		}
+	}
+}
+
+// TestCheckFSCompoundConjunction locks in the fix for the stuck-then-STABLE
+// failure seen in the planner benchmark: a model crammed two `contains:` checks
+// for one file into a single assertion, joined by a newline. Fed whole to one
+// matcher it could never pass, so the (correctly written) file failed forever and
+// the run forked until it stalled. Such a compound must be a conjunction: every
+// clause is evaluated independently and all must hold.
+func TestCheckFSCompoundConjunction(t *testing.T) {
+	dir := t.TempDir()
+	yaml := filepath.Join(dir, "app.yaml")
+	if err := os.WriteFile(yaml, []byte("name: ada-demo\nmode: prod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The exact shape emitted in the benchmark (two clauses, newline-joined).
+	both := yaml + "|contains:^name: ada-demo$\n" + yaml + "|contains:^mode: prod$"
+	if !checkFS(both) {
+		t.Errorf("compound assertion with both lines present should pass:\n%q", both)
+	}
+
+	// If any clause is false, the whole conjunction fails.
+	missing := yaml + "|contains:^name: ada-demo$\n" + yaml + "|contains:^mode: dev$"
+	if checkFS(missing) {
+		t.Errorf("compound assertion with a false clause must fail:\n%q", missing)
+	}
+
+	// Mixed predicate kinds across clauses (existence + content + mode) all AND.
+	mixed := yaml + "\n" + yaml + "|nonempty\n" + yaml + "|0644"
+	if !checkFS(mixed) {
+		t.Errorf("compound of existence+nonempty+mode clauses should pass:\n%q", mixed)
+	}
+
+	// A single (non-compound) pattern is unaffected — no accidental splitting.
+	if !checkFS(yaml + "|contains:^mode: prod$") {
+		t.Error("single-clause content assertion regressed")
+	}
+
+	// splitFSClauses must not split an ordinary single pattern.
+	if got := splitFSClauses(yaml + "|contains:^mode: prod$"); len(got) != 1 {
+		t.Errorf("single pattern split into %d clauses, want 1", len(got))
+	}
+
+	// A compound assertion must render as a clean, single-line conjunction fact —
+	// not the raw multi-line pattern — since it is persisted and shown to the planner.
+	stmt := factStatement(Task{Assertion: Assertion{Channel: ChannelFS, Pattern: both}})
+	if strings.ContainsAny(stmt, "\n\r") {
+		t.Errorf("compound fact statement leaked a newline: %q", stmt)
+	}
+	if !strings.Contains(stmt, "name: ada-demo") || !strings.Contains(stmt, "mode: prod") {
+		t.Errorf("compound fact statement should mention both clauses: %q", stmt)
 	}
 }
 

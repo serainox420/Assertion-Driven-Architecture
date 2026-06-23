@@ -90,6 +90,36 @@ func TestShippedPlannerBasicsSuite(t *testing.T) {
 	}
 }
 
+// TestAllShippedSuitesValid guards every JSON suite in benchmarks/: it must load,
+// have at least one task, and every task must carry a non-empty objective. This
+// catches a typo'd config before it ever reaches a model run.
+func TestAllShippedSuitesValid(t *testing.T) {
+	dir := filepath.Join("..", "..", "benchmarks")
+	if _, err := os.Stat(dir); err != nil {
+		t.Skipf("benchmarks dir not present: %v", err)
+	}
+	suites, err := ListBenchmarks(dir)
+	if err != nil {
+		t.Fatalf("ListBenchmarks: %v", err)
+	}
+	if len(suites) < 5 {
+		t.Fatalf("expected at least 5 shipped suites, got %d", len(suites))
+	}
+	for _, b := range suites {
+		if len(b.Tasks) == 0 {
+			t.Errorf("suite %q has no tasks", b.Name)
+		}
+		for i, task := range b.Tasks {
+			if task.Objective == "" {
+				t.Errorf("suite %q task %d (%q) has an empty objective", b.Name, i+1, task.Name)
+			}
+			if task.Name == "" {
+				t.Errorf("suite %q task %d has an empty name", b.Name, i+1)
+			}
+		}
+	}
+}
+
 func TestTUIBenchmarkSelectScreen(t *testing.T) {
 	dir := t.TempDir()
 	writeBench(t, dir, "demo.json", `{"name":"demo","tasks":[{"name":"t1","objective":"o"}]}`)

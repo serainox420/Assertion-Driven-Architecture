@@ -1,0 +1,37 @@
+{
+  "name": "text-processing",
+  "description": "Producing and transforming text, then proving the result by reading it back: CSV headers, case conversion, in-place edits, field extraction, and a report built from live host facts. Medium-to-hard — the later tasks pair a transformation command with an independent content assertion, and the capstone proves dynamic, runtime-derived content.",
+  "mode": "plan",
+  "tasks": [
+    {
+      "name": "csv-header",
+      "objective": "create /tmp/ada-bench-text/data.csv whose first line is the header 'id,name,role' followed by one data row '1,ada,admin', and prove the file contains a line matching '^id,name,role$'",
+      "max_rounds": 4,
+      "goal_steps": 12
+    },
+    {
+      "name": "uppercase-transform",
+      "objective": "create /tmp/ada-bench-text/input.txt containing 'hello world', then produce /tmp/ada-bench-text/upper.txt holding the uppercased text, and prove upper.txt contains a line matching '^HELLO WORLD$'",
+      "max_rounds": 5,
+      "goal_steps": 14
+    },
+    {
+      "name": "in-place-edit",
+      "objective": "create /tmp/ada-bench-text/list.txt containing the lines 'one', 'two', and 'three', then edit it in place so the second line reads 'TWO', and prove the file contains a line matching '^TWO$'",
+      "max_rounds": 5,
+      "goal_steps": 14
+    },
+    {
+      "name": "extract-field",
+      "objective": "extract the second colon-separated field of the string 'user:ada:admin' and write just that field into /tmp/ada-bench-text/field.txt, and prove the file contains a line matching '^ada$'",
+      "max_rounds": 5,
+      "goal_steps": 14
+    },
+    {
+      "name": "host-report",
+      "objective": "build a report at /tmp/ada-bench-text/report.txt containing a line 'host=' followed by this machine's hostname and a line 'kernel=' followed by the kernel release (uname -r), and prove the report contains a line matching '^host=.+$' and a line matching '^kernel=.+$'",
+      "max_rounds": 7,
+      "goal_steps": 18
+    }
+  ]
+}
