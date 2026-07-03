@@ -1,8 +1,6 @@
 module github.com/serainox420/assertion-driven-architecture
 
-go 1.24.2
-
-toolchain go1.24.7
+go 1.25.0
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0
@@ -11,7 +9,7 @@ require (
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/muesli/termenv v0.16.0
-	golang.org/x/term v0.36.0
+	golang.org/x/term v0.43.0
 )
 
 require (
@@ -42,7 +40,7 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
-	golang.org/x/net v0.38.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/text v0.30.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 )
