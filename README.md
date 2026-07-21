@@ -1,5 +1,7 @@
 # Assertion-Driven Architecture (ADA) — Prototype
 
+<img width="1280" height="589" alt="ADA20" src="https://github.com/user-attachments/assets/21be101d-5daf-4487-aeaa-d6dcc7539062" />
+
 > ### A working Go prototype of the **Assertion-Driven Architecture**: a control pattern
 > for LLM operations agents that removes self-evaluation from the model and relocates
 it to a deterministic runtime.
